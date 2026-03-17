@@ -1,0 +1,236 @@
+# Encoding Fix Report
+
+## Scan Summary
+- Repository UTF-8 check: passed (0 non-UTF-8 text files remain).
+- Root cause located: 2 GBK/GB18030 files were converted to UTF-8.
+- Business logic changes: none.
+
+## Modified Files
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js` (GB18030/GBK -> UTF-8)
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js` (GB18030/GBK -> UTF-8)
+
+## Before vs After (Per Fix)
+Note: `before` is the simulated display when GBK bytes are incorrectly interpreted as UTF-8; `after` is the current UTF-8 text.
+
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:64`
+  - before: `const details = window.prompt("������þ����ɣ�", "��ܽڵ�þ�");`
+  - after: `const details = window.prompt("请输入裁决理由：", "监管节点裁决");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:70`
+  - before: `alert("�þ��ɹ�");`
+  - after: `alert("裁决成功");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:73`
+  - before: `alert("�þ�ʧ��: " + (err.response?.data?.message || err.message));`
+  - after: `alert("裁决失败: " + (err.response?.data?.message || err.message));`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:80`
+  - before: `if (!window.confirm("ȷ��ͨ�����̼���פ������")) return;`
+  - after: `if (!window.confirm("确认通过该商家入驻申请吗？")) return;`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:85`
+  - before: `alert("�̼������ɹ�");`
+  - after: `alert("商家审批成功");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:88`
+  - before: `alert("����ʧ��: " + (err.response?.data?.message || err.message));`
+  - after: `alert("审批失败: " + (err.response?.data?.message || err.message));`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:95`
+  - before: `if (!window.confirm(`ȷ�Ϲ��� ${product.name} (${product.price} ETH) ��`)) return;`
+  - after: `if (!window.confirm(`确认购买 ${product.name} (${product.price} ETH) 吗？`)) return;`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:100`
+  - before: `alert("����ɹ�����ǰ���������Ĳ鿴");`
+  - after: `alert("购买成功，请前往订单中心查看");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:103`
+  - before: `alert("����ʧ��: " + (err.response?.data?.message || err.message));`
+  - after: `alert("购买失败: " + (err.response?.data?.message || err.message));`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:110`
+  - before: `if (!window.confirm("ȷ���ύ�����ϵͳ����AIǩ�����������")) return;`
+  - after: `if (!window.confirm("确认提交审核吗？系统将以AI签名结果上链。")) return;`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:114`
+  - before: `await ProductService.auditProduct(id, decision, "��ܸ���");`
+  - after: `await ProductService.auditProduct(id, decision, "监管复核");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:115`
+  - before: `alert("������");`
+  - after: `alert("审核完成");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:119`
+  - before: `alert("���ʧ��: " + (err.response?.data?.message || err.message));`
+  - after: `alert("审核失败: " + (err.response?.data?.message || err.message));`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:132`
+  - before: `const reason = window.prompt("�������¼�ԭ��", "ƽ̨����¼�");`
+  - after: `const reason = window.prompt("请输入下架原因：", "平台监管下架");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:138`
+  - before: `alert("�¼ܳɹ�");`
+  - after: `alert("下架成功");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:144`
+  - before: `alert("�¼�ʧ��: " + (err.response?.data?.message || err.message));`
+  - after: `alert("下架失败: " + (err.response?.data?.message || err.message));`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:156`
+  - before: `<span className="text-xl font-bold text-white tracking-wide">���Ӳ�Ʒ�����</span>`
+  - after: `<span className="text-xl font-bold text-white tracking-wide">电子产品监管链</span>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:170`
+  - before: `�ҵĶ���`
+  - after: `我的订单`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:179`
+  - before: `����`
+  - after: `发布`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:185`
+  - before: `��Ʒ����`
+  - after: `商品管理`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:191`
+  - before: `���۶���`
+  - after: `销售订单`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:202`
+  - before: `�˳�`
+  - after: `退出`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:207`
+  - before: `ȥ��¼`
+  - after: `去登录`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:219`
+  - before: `<span className="text-gray-700 font-medium">���ڴ���...</span>`
+  - after: `<span className="text-gray-700 font-medium">正在处理...</span>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:231`
+  - before: `<h2 className="text-xl font-bold text-red-800 mb-4">Ͷ�ߴ����� ({complaints.length})</h2>`
+  - after: `<h2 className="text-xl font-bold text-red-800 mb-4">投诉处理中 ({complaints.length})</h2>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:237`
+  - before: `��Ʒ: {c.product?.name} ({c.price} ETH)`
+  - after: `商品: {c.product?.name} ({c.price} ETH)`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:240`
+  - before: `���: {c.buyer?.username} VS ����: {c.product?.seller?.username}`
+  - after: `买家: {c.buyer?.username} VS 卖家: {c.product?.seller?.username}`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:243`
+  - before: `Ͷ������: {c.complaintReason}`
+  - after: `投诉理由: {c.complaintReason}`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:251`
+  - before: `�����ʤ`
+  - after: `判买家胜`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:257`
+  - before: `������ʤ`
+  - after: `判卖家胜`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:269`
+  - before: `<h2 className="text-lg font-bold text-blue-800 mb-3">�̼���פ���� ({pendingSellers.length})</h2>`
+  - after: `<h2 className="text-lg font-bold text-blue-800 mb-3">商家入驻申请 ({pendingSellers.length})</h2>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:277`
+  - before: `������: <strong>{seller.username}</strong>`
+  - after: `申请人: <strong>{seller.username}</strong>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:283`
+  - before: `��׼`
+  - after: `批准`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:293`
+  - before: `<h2 className="text-lg font-bold text-yellow-800 mb-3">�������Ʒ ({pendingProducts.length})</h2>`
+  - after: `<h2 className="text-lg font-bold text-yellow-800 mb-3">待审核商品 ({pendingProducts.length})</h2>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:309`
+  - before: `�ύ���`
+  - after: `提交审核`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:315`
+  - before: `ǿ���¼�`
+  - after: `强制下架`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:327`
+  - before: `��ⱨ��PDF`
+  - after: `检测报告PDF`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:337`
+  - before: `����֤��PDF`
+  - after: `资质证书PDF`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:352`
+  - before: `<h2 className="text-xl font-bold text-gray-800">�����г�</h2>`
+  - after: `<h2 className="text-xl font-bold text-gray-800">交易市场</h2>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:353`
+  - before: `<span className="text-sm text-gray-500">������Ʒ: {products.length}</span>`
+  - after: `<span className="text-sm text-gray-500">在售商品: {products.length}</span>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:366`
+  - before: `<span className="bg-gray-100 px-2 py-1 rounded">�̼�: {product.seller?.username}</span>`
+  - after: `<span className="bg-gray-100 px-2 py-1 rounded">商家: {product.seller?.username}</span>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:368`
+  - before: `<span className="text-indigo-600 font-bold">���: {product.stock}</span>`
+  - after: `<span className="text-indigo-600 font-bold">库存: {product.stock}</span>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:377`
+  - before: `��Դ��ά��`
+  - after: `溯源二维码`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:385`
+  - before: `��������`
+  - after: `立即购买`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:394`
+  - before: `�¼�`
+  - after: `下架`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:401`
+  - before: `{products.length === 0 && <div className="p-10 text-center text-gray-400">�г�����������Ʒ</div>}`
+  - after: `{products.length === 0 && <div className="p-10 text-center text-gray-400">市场暂无在售商品</div>}`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:414`
+  - before: `<h3 className="font-bold text-xl mb-2 text-gray-800">ɨ��鿴��Դ��Ϣ</h3>`
+  - after: `<h3 className="font-bold text-xl mb-2 text-gray-800">扫码查看溯源信息</h3>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/Home.js:433`
+  - before: `�ر�`
+  - after: `关闭`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:37`
+  - before: `const reason = window.prompt("�������¼�ԭ��", "�̼������¼�");`
+  - after: `const reason = window.prompt("请输入下架原因：", "商家主动下架");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:43`
+  - before: `alert("�¼ܳɹ�");`
+  - after: `alert("下架成功");`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:46`
+  - before: `alert("�¼�ʧ��: " + (err.response?.data?.message || err.message));`
+  - after: `alert("下架失败: " + (err.response?.data?.message || err.message));`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:53`
+  - before: `if (product.auditStatus === 0) return "�����";`
+  - after: `if (product.auditStatus === 0) return "待审核";`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:54`
+  - before: `if (product.auditStatus === 2) return "���¼�/δͨ��";`
+  - after: `if (product.auditStatus === 2) return "已下架/未通过";`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:55`
+  - before: `if (product.stock <= 0) return "������";`
+  - after: `if (product.stock <= 0) return "已售罄";`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:56`
+  - before: `return "����";`
+  - after: `return "在售";`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:69`
+  - before: `<div className="text-sm font-medium opacity-80 uppercase tracking-wider">�ҵ�����������</div>`
+  - after: `<div className="text-sm font-medium opacity-80 uppercase tracking-wider">我的链上信誉分</div>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:72`
+  - before: `{sellerInfo.isBlacklisted ? "�˻��Ѷ���" : "״̬����"}`
+  - after: `{sellerInfo.isBlacklisted ? "账户已冻结" : "状态正常"}`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:79`
+  - before: `<h3 className="font-bold text-gray-700 mb-2">��������</h3>`
+  - after: `<h3 className="font-bold text-gray-700 mb-2">信誉规则</h3>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:81`
+  - before: `<li>��ɶ�����+1</li>`
+  - after: `<li>完成订单：+1</li>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:82`
+  - before: `<li>���Ǻ�����+2</li>`
+  - after: `<li>五星好评：+2</li>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:83`
+  - before: `<li>Ͷ�߰��ߣ�-20</li>`
+  - after: `<li>投诉败诉：-20</li>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:84`
+  - before: `<li className="text-xs text-gray-400">�������ͽ������Ϸ�ض���</li>`
+  - after: `<li className="text-xs text-gray-400">分数过低将被链上风控冻结</li>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:90`
+  - before: `<h1 className="text-2xl font-bold text-gray-800">��Ʒ����</h1>`
+  - after: `<h1 className="text-2xl font-bold text-gray-800">商品管理</h1>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:99`
+  - before: `+ ��������Ʒ`
+  - after: `+ 发布新商品`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:102`
+  - before: `������ҳ`
+  - after: `返回首页`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:107`
+  - before: `{loading && <div className="mb-4 text-sm text-indigo-600 font-medium">�����ύ���Ͻ���...</div>}`
+  - after: `{loading && <div className="mb-4 text-sm text-indigo-600 font-medium">正在提交链上交易...</div>}`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:113`
+  - before: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">��Ʒ����</th>`
+  - after: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">商品名称</th>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:114`
+  - before: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">�۸�</th>`
+  - after: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">价格</th>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:115`
+  - before: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">���</th>`
+  - after: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">库存</th>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:116`
+  - before: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">״̬</th>`
+  - after: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:117`
+  - before: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">����</th>`
+  - after: `<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:137`
+  - before: `�¼�`
+  - after: `下架`
+- `E:/bishexianmu/electronic-regulation-system/frontend/src/pages/MyProducts.js:145`
+  - before: `�㻹û�з�����Ʒ`
+  - after: `你还没有发布商品`
+
+## Uncertain Items
+- None.
