@@ -1,43 +1,29 @@
+const axios = require("axios");
+const FormData = require("form-data");
+
 const db = require("../models");
+const auditService = require("../services/audit.service");
+const {
+  web3,
+  contract,
+  accounts,
+  sendContractTransaction,
+} = require("../services/chain.service");
+
 const Product = db.product;
 const Order = db.order;
 const User = db.user;
+const Op = db.Sequelize.Op;
 
-const axios = require("axios");
-const FormData = require("form-data");
-const fs = require("fs");
-
-const contractArtifact = require("../config/ProductRegulation.json");
-const CONTRACT_ADDRESS =
-  process.env.CONTRACT_ADDRESS || "0x563853589af3A2433348b8E20D8547b14C6a8088";
-
-let Web3;
-try {
-  const pkg = require("web3");
-  Web3 = pkg.Web3 || pkg;
-} catch (e) {
-  Web3 = require("web3");
-}
-
-const web3 = new Web3(process.env.GANACHE_URL || "http://127.0.0.1:7545");
-
-const AI_ORACLE_PRIVATE_KEY =
-  process.env.AI_ORACLE_PRIVATE_KEY ||
-  "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4f5f9e5d7b8c6a7d1";
-const aiOracleAccount = web3.eth.accounts.privateKeyToAccount(AI_ORACLE_PRIVATE_KEY);
-
-function cleanupUploadedFile(uploadedFile) {
-  if (uploadedFile && uploadedFile.path && fs.existsSync(uploadedFile.path)) {
-    fs.unlinkSync(uploadedFile.path);
-  }
-}
-
-async function callAiAuditService(description, filePath) {
+async function callAiAuditService(description, uploadedFile) {
   try {
     const form = new FormData();
 
-    if (filePath) {
-      form.append("file", fs.createReadStream(filePath));
+    if (uploadedFile?.buffer) {
+      form.append("file", uploadedFile.buffer, {
+        filename: uploadedFile.originalname || "report.pdf",
+        contentType: uploadedFile.mimetype || "application/pdf",
+      });
     } else {
       form.append("file", Buffer.from(description || "", "utf-8"), {
         filename: "description.txt",
@@ -47,6 +33,7 @@ async function callAiAuditService(description, filePath) {
 
     const response = await axios.post("http://127.0.0.1:5000/audit", form, {
       headers: { ...form.getHeaders() },
+      maxBodyLength: Infinity,
     });
 
     return response.data.result === "PASS";
@@ -62,8 +49,39 @@ function signAiAuditResult(productId, isPass) {
     { type: "bool", value: Boolean(isPass) }
   );
 
-  const signature = web3.eth.accounts.sign(payloadHash, AI_ORACLE_PRIVATE_KEY).signature;
-  return { payloadHash, signature, oracleAddress: aiOracleAccount.address };
+  const signature = web3.eth.accounts.sign(payloadHash, accounts.aiOracle.privateKey).signature;
+  return { payloadHash, signature, oracleAddress: accounts.aiOracle.address };
+}
+
+async function enrichSellerReputation(product) {
+  try {
+    const sellerData = await contract.methods.sellers(product.seller.ethAddress).call();
+    product.dataValues.sellerScore = parseInt(sellerData.reputationScore, 10);
+  } catch (error) {
+    product.dataValues.sellerScore = 60;
+  }
+
+  try {
+    const txCount = await Order.count({
+      include: [
+        {
+          model: Product,
+          as: "product",
+          where: { sellerId: product.seller.id },
+        },
+      ],
+      where: {
+        status: { [Op.in]: [1, 2] },
+      },
+    });
+    product.dataValues.sellerTxCount = txCount;
+  } catch (error) {
+    product.dataValues.sellerTxCount = 0;
+  }
+}
+
+function getOrderChainId(order) {
+  return order.onChainId > 0 ? order.onChainId : order.id;
 }
 
 exports.getAllProducts = async (req, res) => {
@@ -71,7 +89,7 @@ exports.getAllProducts = async (req, res) => {
     const products = await Product.findAll({
       where: {
         auditStatus: 1,
-        stock: { [db.Sequelize.Op.gt]: 0 },
+        stock: { [Op.gt]: 0 },
       },
       include: [
         {
@@ -82,39 +100,12 @@ exports.getAllProducts = async (req, res) => {
       ],
     });
 
-    const activeProducts = products.filter((p) => !p.seller.isBlacklisted);
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-
-    for (const p of activeProducts) {
-      try {
-        const sellerData = await contract.methods.sellers(p.seller.ethAddress).call();
-        p.dataValues.sellerScore = parseInt(sellerData.reputationScore, 10);
-      } catch (e) {
-        p.dataValues.sellerScore = 60;
-      }
-
-      try {
-        const txCount = await Order.count({
-          include: [
-            {
-              model: Product,
-              as: "product",
-              where: { sellerId: p.seller.id },
-            },
-          ],
-          where: {
-            status: { [db.Sequelize.Op.in]: [1, 2] },
-          },
-        });
-        p.dataValues.sellerTxCount = txCount;
-      } catch (e) {
-        p.dataValues.sellerTxCount = 0;
-      }
-    }
+    const activeProducts = products.filter((product) => !product.seller.isBlacklisted);
+    await Promise.all(activeProducts.map(enrichSellerReputation));
 
     res.send(activeProducts);
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
@@ -122,11 +113,12 @@ exports.getPendingProducts = async (req, res) => {
   try {
     const products = await Product.findAll({
       where: { auditStatus: 0 },
-      include: [{ model: User, as: "seller" }],
+      include: [{ model: User, as: "seller", attributes: ["id", "username", "ethAddress"] }],
+      order: [["createdAt", "DESC"]],
     });
     res.send(products);
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
@@ -137,37 +129,33 @@ exports.getMyProducts = async (req, res) => {
       order: [["createdAt", "DESC"]],
     });
     res.send(products);
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
 exports.addProduct = async (req, res) => {
-  const uploadedFile = req.file;
-
   try {
     const { name, price, description, ipfsHash, qualificationHash, stock } = req.body;
     const seller = await User.findByPk(req.userId);
 
     if (!seller) {
-      cleanupUploadedFile(uploadedFile);
       return res.status(404).send({ message: "Seller not found" });
     }
-
+    if (seller.role !== "seller") {
+      return res.status(403).send({ message: "Only sellers can publish products" });
+    }
+    if (seller.status !== 1) {
+      return res.status(403).send({ message: "Seller account is not approved yet" });
+    }
     if (seller.isBlacklisted) {
-      cleanupUploadedFile(uploadedFile);
       return res.status(403).send({ message: "Your account is blacklisted" });
     }
 
-    const aiPassed = await callAiAuditService(
-      description || "",
-      uploadedFile ? uploadedFile.path : null
-    );
-
-    cleanupUploadedFile(uploadedFile);
+    const aiPassed = await callAiAuditService(description || "", req.file);
 
     if (!aiPassed) {
-      const product = await Product.create({
+      const rejectedProduct = await Product.create({
         name,
         price,
         description,
@@ -176,43 +164,41 @@ exports.addProduct = async (req, res) => {
         stock: parseInt(stock, 10),
         sellerId: seller.id,
         auditStatus: 2,
+        auditReason: "AI audit rejected this product.",
         onChainId: 0,
         txHash: "AI_REJECTED",
       });
 
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_AI_REJECTED",
+        targetType: "PRODUCT",
+        targetId: rejectedProduct.id,
+        result: "SUCCESS",
+        details: { name },
+        req,
+      });
+
       return res.send({
         message: "AI audit rejected this product.",
-        product,
+        product: rejectedProduct,
       });
     }
 
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    const txData = contract.methods
-      .createProduct(
+    const receipt = await sendContractTransaction({
+      account: accounts.market,
+      method: contract.methods.createProduct(
         name,
         web3.utils.toWei(price.toString(), "ether"),
         ipfsHash || "NoReport",
         qualificationHash || "NoCert",
         parseInt(stock, 10),
-        false
-      )
-      .encodeABI();
+        seller.ethAddress
+      ),
+      gas: 2000000,
+    });
 
-    const gasPrice = await web3.eth.getGasPrice();
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: seller.ethAddress,
-        data: txData,
-        gas: 2000000,
-        gasPrice,
-      },
-      seller.ethPrivateKey
-    );
-
-    const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
     const chainProductId = parseInt(await contract.methods.productCount().call(), 10);
-
     const product = await Product.create({
       name,
       price,
@@ -226,108 +212,134 @@ exports.addProduct = async (req, res) => {
       onChainId: chainProductId,
     });
 
+    await auditService.record({
+      operator: req.user,
+      action: "PRODUCT_CREATED",
+      targetType: "PRODUCT",
+      targetId: product.id,
+      result: "SUCCESS",
+      details: { name, chainProductId },
+      req,
+      txHash: receipt.transactionHash,
+    });
+
     res.send({
       message: "AI pre-audit passed. Waiting for regulator review.",
       product,
     });
-  } catch (err) {
-    cleanupUploadedFile(uploadedFile);
-    console.error("Add product failed:", err);
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    console.error("Add product failed:", error);
+    res.status(500).send({ message: error.message });
   }
 };
 
 exports.auditProduct = async (req, res) => {
   try {
-    const { productId, reason } = req.body;
-
-    const regulator = await User.findByPk(req.userId);
+    const { productId, reason, decision } = req.body;
     const product = await Product.findByPk(productId);
 
-    if (!regulator) return res.status(404).send({ message: "Regulator not found" });
-    if (!product) return res.status(404).send({ message: "Product not found" });
+    if (!product) {
+      return res.status(404).send({ message: "Product not found" });
+    }
+    if (product.auditStatus !== 0) {
+      return res.status(400).send({ message: "Only pending products can be audited" });
+    }
+
+    const requestedDecision = Number(decision);
+    const aiPassed =
+      requestedDecision === 0 ? false : await callAiAuditService(product.description || "", null);
 
     const chainId = product.onChainId > 0 ? product.onChainId : product.id;
-    const aiPassed = await callAiAuditService(product.description || "", null);
     const { signature, oracleAddress } = signAiAuditResult(chainId, aiPassed);
-
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    const txData = contract.methods
-      .auditProduct(chainId, aiPassed, reason || "AI oracle audit", signature)
-      .encodeABI();
-
-    const gasPrice = await web3.eth.getGasPrice();
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: regulator.ethAddress,
-        data: txData,
-        gas: 600000,
-        gasPrice,
-      },
-      regulator.ethPrivateKey
-    );
-
-    await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+    const receipt = await sendContractTransaction({
+      account: accounts.regulator,
+      method: contract.methods.auditProduct(
+        chainId,
+        aiPassed,
+        reason || "Regulator review",
+        signature
+      ),
+      gas: 800000,
+    });
 
     product.auditStatus = aiPassed ? 1 : 2;
+    product.auditReason = reason || (aiPassed ? "Approved by regulator review" : "Rejected by regulator review");
+    product.auditBy = req.userId;
+    product.auditAt = new Date();
     await product.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "PRODUCT_AUDITED",
+      targetType: "PRODUCT",
+      targetId: product.id,
+      result: "SUCCESS",
+      details: {
+        auditStatus: product.auditStatus,
+        oracleAddress,
+      },
+      req,
+      txHash: receipt.transactionHash,
+    });
 
     res.send({
       message: "Audit completed with AI oracle signature.",
       auditStatus: product.auditStatus,
       aiOracleSigner: oracleAddress,
     });
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
 exports.delistProduct = async (req, res) => {
   try {
     const { productId, reason } = req.body;
-
-    const operator = await User.findByPk(req.userId);
     const product = await Product.findByPk(productId);
 
-    if (!operator) return res.status(404).send({ message: "User not found" });
-    if (!product) return res.status(404).send({ message: "Product not found" });
+    if (!product) {
+      return res.status(404).send({ message: "Product not found" });
+    }
 
-    const isRegulator = operator.role === "admin" || operator.role === "regulator";
-    const isSeller = operator.id === product.sellerId;
+    const isRegulator = req.user.role === "admin" || req.user.role === "regulator";
+    const isSellerOwner = req.user.role === "seller" && req.user.id === product.sellerId;
 
-    if (!isRegulator && !isSeller) {
-      return res.status(403).send({ message: "No permission to delist" });
+    if (!isRegulator && !isSellerOwner) {
+      await auditService.recordAccessDenied(req, ["seller(owner)", "regulator", "admin"]);
+      return res.status(403).send({ message: "No permission to delist this product" });
     }
 
     const chainId = product.onChainId > 0 ? product.onChainId : product.id;
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-
-    const txData = contract.methods
-      .delistProduct(chainId, reason || "Manual delist")
-      .encodeABI();
-
-    const gasPrice = await web3.eth.getGasPrice();
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: operator.ethAddress,
-        data: txData,
-        gas: 500000,
-        gasPrice,
-      },
-      operator.ethPrivateKey
-    );
-
-    await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+    const receipt = await sendContractTransaction({
+      account: isRegulator ? accounts.regulator : accounts.market,
+      method: contract.methods.delistProduct(chainId, reason || "Manual delist"),
+      gas: 600000,
+    });
 
     product.auditStatus = 2;
     product.stock = 0;
+    product.delistReason = reason || "Manual delist";
+    product.delistedBy = req.userId;
+    product.delistedAt = new Date();
     await product.save();
 
+    await auditService.record({
+      operator: req.user,
+      action: "PRODUCT_DELISTED",
+      targetType: "PRODUCT",
+      targetId: product.id,
+      result: "SUCCESS",
+      details: {
+        reason: product.delistReason,
+        forced: isRegulator,
+      },
+      req,
+      txHash: receipt.transactionHash,
+    });
+
     res.send({ message: "Product delisted successfully" });
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
@@ -338,66 +350,70 @@ exports.purchaseProduct = async (req, res) => {
     const buyer = await User.findByPk(req.userId);
     const product = await Product.findByPk(productId);
 
-    if (!buyer) return res.status(404).send({ message: "Buyer not found" });
-    if (!product) return res.status(404).send({ message: "Product not found" });
-
-    const seller = await User.findByPk(product.sellerId);
-    if (seller.isBlacklisted) {
-      return res.status(400).send({ message: "Seller is blacklisted" });
+    if (!buyer) {
+      return res.status(404).send({ message: "Buyer not found" });
     }
-
+    if (!product) {
+      return res.status(404).send({ message: "Product not found" });
+    }
+    if (product.auditStatus !== 1) {
+      return res.status(400).send({ message: "Product is not available for purchase" });
+    }
     if (product.stock <= 0) {
       return res.status(400).send({ message: "Out of stock" });
     }
 
+    const seller = await User.findByPk(product.sellerId);
+    if (seller?.isBlacklisted) {
+      return res.status(400).send({ message: "Seller is blacklisted" });
+    }
+
     const chainId = product.onChainId > 0 ? product.onChainId : product.id;
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    const txData = contract.methods.purchaseProduct(chainId).encodeABI();
+    const receipt = await sendContractTransaction({
+      account: accounts.market,
+      method: contract.methods.purchaseProduct(chainId, buyer.ethAddress),
+      gas: 1200000,
+    });
 
-    const priceInWei = web3.utils.toWei(product.price.toString(), "ether");
-    const gasPrice = await web3.eth.getGasPrice();
-
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: buyer.ethAddress,
-        data: txData,
-        gas: 2000000,
-        gasPrice,
-        value: priceInWei,
-      },
-      buyer.ethPrivateKey
-    );
-
-    await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+    const chainOrderId = parseInt(await contract.methods.orderCount().call(), 10);
 
     await Order.create({
       productId: product.id,
       buyerId: buyer.id,
       price: product.price,
       status: 0,
-      onChainId: 0,
+      onChainId: chainOrderId,
     });
 
     product.stock = product.stock - 1;
     await product.save();
 
+    await auditService.record({
+      operator: req.user,
+      action: "PRODUCT_PURCHASED",
+      targetType: "PRODUCT",
+      targetId: product.id,
+      result: "SUCCESS",
+      details: { chainOrderId },
+      req,
+      txHash: receipt.transactionHash,
+    });
+
     res.send({ message: "Purchase successful" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Purchase failed: " + err.message });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Purchase failed: " + error.message });
   }
 };
 
 exports.getMyOrders = async (req, res) => {
   try {
-    const userId = req.userId;
-    const user = await User.findByPk(userId);
+    const user = await User.findByPk(req.userId);
     let orders = [];
 
     if (user.role === "buyer") {
       orders = await Order.findAll({
-        where: { buyerId: userId },
+        where: { buyerId: req.userId },
         include: [
           {
             model: Product,
@@ -413,7 +429,7 @@ exports.getMyOrders = async (req, res) => {
           {
             model: Product,
             as: "product",
-            where: { sellerId: userId },
+            where: { sellerId: req.userId },
           },
           {
             model: User,
@@ -426,147 +442,203 @@ exports.getMyOrders = async (req, res) => {
     }
 
     res.send(orders);
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
 exports.confirmReceipt = async (req, res) => {
   try {
     const { orderId } = req.body;
-    const buyer = await User.findByPk(req.userId);
     const order = await Order.findByPk(orderId);
-    const chainOrderId = order.id;
+    const buyer = await User.findByPk(req.userId);
 
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    const txData = contract.methods.confirmReceipt(chainOrderId).encodeABI();
+    if (!order || !buyer) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (order.buyerId !== buyer.id) {
+      await auditService.recordAccessDenied(req, ["buyer(owner)"]);
+      return res.status(403).send({ message: "You can only confirm your own order" });
+    }
+    if (order.status !== 0) {
+      return res.status(400).send({ message: "Only locked orders can be confirmed" });
+    }
 
-    const gasPrice = await web3.eth.getGasPrice();
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: buyer.ethAddress,
-        data: txData,
-        gas: 2000000,
-        gasPrice,
-      },
-      buyer.ethPrivateKey
-    );
-
-    await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+    const receipt = await sendContractTransaction({
+      account: accounts.market,
+      method: contract.methods.confirmReceipt(getOrderChainId(order), buyer.ethAddress),
+      gas: 600000,
+    });
 
     order.status = 1;
     await order.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "ORDER_CONFIRMED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      req,
+      txHash: receipt.transactionHash,
+    });
+
     res.send({ message: "Receipt confirmed" });
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
 exports.rateOrder = async (req, res) => {
   try {
     const { orderId, rating, comment } = req.body;
-    const buyer = await User.findByPk(req.userId);
     const order = await Order.findByPk(orderId);
-    const chainOrderId = order.id;
+    const buyer = await User.findByPk(req.userId);
 
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    const txData = contract.methods
-      .rateOrder(chainOrderId, parseInt(rating, 10), comment)
-      .encodeABI();
+    if (!order || !buyer) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (order.buyerId !== buyer.id) {
+      await auditService.recordAccessDenied(req, ["buyer(owner)"]);
+      return res.status(403).send({ message: "You can only rate your own order" });
+    }
+    if (order.status !== 1) {
+      return res.status(400).send({ message: "Only confirmed orders can be rated" });
+    }
 
-    const gasPrice = await web3.eth.getGasPrice();
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: buyer.ethAddress,
-        data: txData,
-        gas: 500000,
-        gasPrice,
-      },
-      buyer.ethPrivateKey
-    );
-
-    await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+    const receipt = await sendContractTransaction({
+      account: accounts.market,
+      method: contract.methods.rateOrder(
+        getOrderChainId(order),
+        buyer.ethAddress,
+        parseInt(rating, 10),
+        comment || ""
+      ),
+      gas: 600000,
+    });
 
     order.status = 2;
     order.rating = rating;
     order.comment = comment;
     await order.save();
 
+    await auditService.record({
+      operator: req.user,
+      action: "ORDER_RATED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      details: { rating },
+      req,
+      txHash: receipt.transactionHash,
+    });
+
     res.send({ message: "Rated successfully" });
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
 exports.raiseComplaint = async (req, res) => {
   try {
-    const { orderId, reason } = req.body;
-    const buyer = await User.findByPk(req.userId);
+    const { orderId, reason, evidenceIpfsHash } = req.body;
     const order = await Order.findByPk(orderId);
-    const chainOrderId = order.id;
+    const buyer = await User.findByPk(req.userId);
 
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    const txData = contract.methods.raiseComplaint(chainOrderId, reason).encodeABI();
+    if (!order || !buyer) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (order.buyerId !== buyer.id) {
+      await auditService.recordAccessDenied(req, ["buyer(owner)"]);
+      return res.status(403).send({ message: "You can only complain about your own order" });
+    }
+    if (order.status !== 0) {
+      return res.status(400).send({ message: "Only locked orders can enter complaint flow" });
+    }
 
-    const gasPrice = await web3.eth.getGasPrice();
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: buyer.ethAddress,
-        data: txData,
-        gas: 500000,
-        gasPrice,
-      },
-      buyer.ethPrivateKey
-    );
+    const complaintText = evidenceIpfsHash
+      ? `${reason} (Evidence: ipfs://${evidenceIpfsHash})`
+      : reason;
 
-    await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+    const receipt = await sendContractTransaction({
+      account: accounts.market,
+      method: contract.methods.raiseComplaint(
+        getOrderChainId(order),
+        buyer.ethAddress,
+        complaintText
+      ),
+      gas: 600000,
+    });
 
     order.status = 3;
     order.complaintReason = reason;
+    order.evidenceIpfsHash = evidenceIpfsHash || null;
     await order.save();
 
+    await auditService.record({
+      operator: req.user,
+      action: "COMPLAINT_RAISED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      details: { evidenceIpfsHash: evidenceIpfsHash || null },
+      req,
+      txHash: receipt.transactionHash,
+      ipfsHash: evidenceIpfsHash || null,
+    });
+
     res.send({ message: "Complaint submitted" });
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
 exports.resolveComplaint = async (req, res) => {
   try {
     const { orderId, rulingForBuyer, rulingDetails } = req.body;
-
-    const regulator = await User.findByPk(req.userId);
     const order = await Order.findByPk(orderId);
-    const chainOrderId = order.id;
 
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    const txData = contract.methods
-      .resolveComplaint(chainOrderId, rulingForBuyer, rulingDetails || "")
-      .encodeABI();
+    if (!order) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (order.status !== 3) {
+      return res.status(400).send({ message: "Only disputed orders can be resolved" });
+    }
 
-    const gasPrice = await web3.eth.getGasPrice();
-    const signedTx = await web3.eth.accounts.signTransaction(
-      {
-        to: CONTRACT_ADDRESS,
-        from: regulator.ethAddress,
-        data: txData,
-        gas: 500000,
-        gasPrice,
-      },
-      regulator.ethPrivateKey
-    );
-
-    await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+    const receipt = await sendContractTransaction({
+      account: accounts.regulator,
+      method: contract.methods.resolveComplaint(
+        getOrderChainId(order),
+        Boolean(rulingForBuyer),
+        rulingDetails || ""
+      ),
+      gas: 700000,
+    });
 
     order.status = rulingForBuyer ? 4 : 1;
+    order.resolvedBy = req.userId;
+    order.resolvedAt = new Date();
+    order.rulingForBuyer = Boolean(rulingForBuyer);
+    order.rulingDetails = rulingDetails || "";
     await order.save();
 
+    await auditService.record({
+      operator: req.user,
+      action: "COMPLAINT_RESOLVED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      details: {
+        rulingForBuyer: Boolean(rulingForBuyer),
+        rulingDetails: rulingDetails || "",
+      },
+      req,
+      txHash: receipt.transactionHash,
+    });
+
     res.send({ message: "Complaint resolved" });
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
 
@@ -589,19 +661,17 @@ exports.getAllComplaints = async (req, res) => {
       order: [["updatedAt", "DESC"]],
     });
 
-    const contract = new web3.eth.Contract(contractArtifact.abi, CONTRACT_ADDRESS);
-    for (const c of complaints) {
+    for (const complaint of complaints) {
       try {
-        const sellerData = await contract.methods.sellers(c.product.seller.ethAddress).call();
-        c.product.seller.dataValues.score = parseInt(sellerData.reputationScore, 10);
-      } catch (e) {
-        c.product.seller.dataValues.score = 60;
+        const sellerData = await contract.methods.sellers(complaint.product.seller.ethAddress).call();
+        complaint.product.seller.dataValues.score = parseInt(sellerData.reputationScore, 10);
+      } catch (error) {
+        complaint.product.seller.dataValues.score = 60;
       }
     }
 
     res.send(complaints);
-  } catch (err) {
-    res.status(500).send({ message: err.message });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 };
-

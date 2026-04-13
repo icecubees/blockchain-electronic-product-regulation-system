@@ -1,26 +1,49 @@
 const jwt = require("jsonwebtoken");
 const config = require("../config/auth.config.js");
+const db = require("../models");
+const auditService = require("../services/audit.service");
 
-verifyToken = (req, res, next) => {
-  // 从请求头获取 token (通常是 x-access-token 或 Authorization)
-  let token = req.headers["x-access-token"];
+async function verifyToken(req, res, next) {
+  try {
+    const token = req.headers["x-access-token"];
 
-  if (!token) {
-    return res.status(403).send({ message: "未提供 Token！请先登录。" });
-  }
-
-  jwt.verify(token, config.secret, (err, decoded) => {
-    if (err) {
-      return res.status(401).send({ message: "Token 非法或已过期！" });
+    if (!token) {
+      return res.status(403).send({ message: "Missing token. Please login first." });
     }
-    // 把解析出来的 userId 塞进 req 对象，方便后面的控制器使用
-    req.userId = decoded.id;
+
+    const decoded = jwt.verify(token, config.secret);
+    const user = await db.user.findByPk(decoded.id, {
+      attributes: ["id", "username", "role", "status", "isBlacklisted", "ethAddress"],
+    });
+
+    if (!user) {
+      return res.status(401).send({ message: "User not found for token." });
+    }
+
+    req.userId = user.id;
+    req.user = user;
     next();
-  });
-};
+  } catch (error) {
+    return res.status(401).send({ message: "Token is invalid or expired." });
+  }
+}
 
-const authJwt = {
-  verifyToken: verifyToken
-};
+function requireRoles(...roles) {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).send({ message: "Unauthenticated request." });
+    }
 
-module.exports = authJwt;
+    if (!roles.includes(req.user.role)) {
+      await auditService.recordAccessDenied(req, roles);
+      return res.status(403).send({ message: "You do not have permission to perform this action." });
+    }
+
+    next();
+  };
+}
+
+module.exports = {
+  verifyToken,
+  requireRoles,
+};
