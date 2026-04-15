@@ -1,0 +1,858 @@
+import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+
+import ProductService from "../services/product.service";
+import FileService from "../services/file.service";
+import AuthService from "../services/auth.service";
+
+const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
+
+const COMPLAINT_TYPES = [
+  { value: "battery_issue", label: "电池问题" },
+  { value: "counterfeit_suspected", label: "疑似假货" },
+  { value: "refurbished_not_disclosed", label: "翻新未披露" },
+  { value: "serial_number_mismatch", label: "序列号不一致" },
+  { value: "performance_issue", label: "性能问题" },
+  { value: "accessory_mismatch", label: "配件不符" },
+  { value: "safety_risk", label: "安全风险" },
+];
+
+const AFTER_SALES_TYPES = [
+  { value: "warranty_claim", label: "保修申请" },
+  { value: "repair", label: "维修" },
+  { value: "component_replacement", label: "部件更换" },
+  { value: "quality_refund", label: "质量退款" },
+];
+
+function getShippingLabel(order) {
+  if (order.shippingStatus === "shipped") return "运输中";
+  if (order.shippingStatus === "delivered") return "已送达";
+  return "待发货";
+}
+
+function getOrderStatusLabel(order) {
+  switch (order.status) {
+    case 0:
+      return order.shippingStatus === "shipped" ? "待收货" : "待发货";
+    case 1:
+      return "待评价";
+    case 2:
+      return "已完成";
+    case 3:
+      return "投诉处理中";
+    case 4:
+      return "已退款";
+    default:
+      return "未知状态";
+  }
+}
+
+function getStatusClass(order) {
+  if (order.status === 4) return "bg-slate-100 text-slate-700";
+  if (order.status === 3) return "bg-rose-100 text-rose-700";
+  if (order.status === 2) return "bg-emerald-100 text-emerald-700";
+  if (order.status === 1) return "bg-amber-100 text-amber-700";
+  if (order.shippingStatus === "shipped") return "bg-indigo-100 text-indigo-700";
+  return "bg-sky-100 text-sky-700";
+}
+
+function getComplaintTypeLabel(type) {
+  return COMPLAINT_TYPES.find((item) => item.value === type)?.label || type || "一般投诉";
+}
+
+function getAfterSalesTypeLabel(type) {
+  return AFTER_SALES_TYPES.find((item) => item.value === type)?.label || type || "售后记录";
+}
+
+function getPaymentStatusLabel(status) {
+  switch (status) {
+    case "paid":
+      return "Paid";
+    case "refunded":
+      return "Refunded";
+    case "failed":
+      return "Payment failed";
+    default:
+      return "Pending payment";
+  }
+}
+
+function getRefundStatusLabel(status) {
+  switch (status) {
+    case "pending_review":
+      return "Refund pending review";
+    case "refunded":
+      return "Refund completed";
+    case "rejected":
+      return "Refund rejected";
+    default:
+      return "No refund";
+  }
+}
+
+function getRecallNotificationStatusLabel(status) {
+  switch (status) {
+    case "viewed":
+      return "Viewed";
+    case "acknowledged":
+      return "Acknowledged";
+    case "closed":
+      return "Closed";
+    default:
+      return "Pending recall action";
+  }
+}
+
+function formatOrderDateTime(value, fallback = "N/A") {
+  return value ? new Date(value).toLocaleString() : fallback;
+}
+
+function formatOrderAmount(value) {
+  return Number.isFinite(Number(value)) ? `${Number(value)} ETH` : "0 ETH";
+}
+
+const INITIAL_COMPLAINT_STATE = {
+  type: COMPLAINT_TYPES[0].value,
+  reason: "",
+  file: null,
+};
+
+const INITIAL_AFTER_SALES_FORM = {
+  type: AFTER_SALES_TYPES[0].value,
+  componentName: "",
+  description: "",
+  serviceResult: "",
+  file: null,
+};
+
+export default function OrderCenter() {
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [currentUser, setCurrentUser] = useState(undefined);
+  const [complaintOrder, setComplaintOrder] = useState(null);
+  const [complaintForm, setComplaintForm] = useState(INITIAL_COMPLAINT_STATE);
+  const [sellerEvidenceFiles, setSellerEvidenceFiles] = useState({});
+  const [ratingForms, setRatingForms] = useState({});
+  const [shipmentForms, setShipmentForms] = useState({});
+  const [sellerResponseForms, setSellerResponseForms] = useState({});
+  const [afterSalesForms, setAfterSalesForms] = useState({});
+
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const user = AuthService.getCurrentUser();
+    if (!user) {
+      navigate("/login");
+      return;
+    }
+
+    setCurrentUser(user);
+    loadOrders();
+  }, [navigate]);
+
+  const loadOrders = () => {
+    ProductService.getMyOrders().then(
+      (response) => setOrders(response.data),
+      (error) => console.error(error)
+    );
+  };
+
+  const updateRatingForm = (orderId, field, value) => {
+    setRatingForms((previous) => ({
+      ...previous,
+      [orderId]: {
+        score: previous[orderId]?.score || 5,
+        comment: previous[orderId]?.comment || "",
+        [field]: value,
+      },
+    }));
+  };
+
+  const updateShipmentForm = (orderId, field, value) => {
+    setShipmentForms((previous) => ({
+      ...previous,
+      [orderId]: {
+        trackingNumber: previous[orderId]?.trackingNumber || "",
+        shippingCarrier: previous[orderId]?.shippingCarrier || "",
+        [field]: value,
+      },
+    }));
+  };
+
+  const updateSellerResponseForm = (orderId, value) => {
+    setSellerResponseForms((previous) => ({
+      ...previous,
+      [orderId]: value,
+    }));
+  };
+
+  const updateAfterSalesForm = (orderId, field, value) => {
+    setAfterSalesForms((previous) => ({
+      ...previous,
+      [orderId]: {
+        ...(previous[orderId] || INITIAL_AFTER_SALES_FORM),
+        [field]: value,
+      },
+    }));
+  };
+
+  const resetComplaintModal = () => {
+    setComplaintOrder(null);
+    setComplaintForm(INITIAL_COMPLAINT_STATE);
+  };
+
+  const resetAfterSalesForm = (orderId) => {
+    setAfterSalesForms((previous) => ({
+      ...previous,
+      [orderId]: INITIAL_AFTER_SALES_FORM,
+    }));
+  };
+
+  const handleConfirm = async (orderId) => {
+    setLoading(true);
+    try {
+      await ProductService.confirmReceipt(orderId);
+      window.alert("确认收货成功，现在可以提交评价。");
+      loadOrders();
+    } catch (error) {
+      window.alert(`操作失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleShip = async (orderId) => {
+    const form = shipmentForms[orderId] || {};
+    const trackingNumber = String(form.trackingNumber || "").trim();
+    const shippingCarrier = String(form.shippingCarrier || "").trim();
+
+    if (!trackingNumber) {
+      window.alert("请输入物流单号。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await ProductService.shipOrder(orderId, trackingNumber, shippingCarrier);
+      window.alert("订单已标记为发货。");
+      resetAfterSalesForm(orderId);
+      setShipmentForms((previous) => ({
+        ...previous,
+        [orderId]: {
+          trackingNumber: "",
+          shippingCarrier: "",
+        },
+      }));
+      loadOrders();
+    } catch (error) {
+      window.alert(`发货失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmitRating = async (orderId) => {
+    const form = ratingForms[orderId] || { score: 5, comment: "" };
+    setLoading(true);
+    try {
+      await ProductService.rateOrder(orderId, form.score, form.comment);
+      window.alert("评价提交成功。");
+      setRatingForms((previous) => ({
+        ...previous,
+        [orderId]: { score: 5, comment: "" },
+      }));
+      loadOrders();
+    } catch (error) {
+      window.alert(`评价提交失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmitComplaint = async (event) => {
+    event.preventDefault();
+    if (!complaintForm.reason.trim()) {
+      window.alert("请输入投诉原因。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      let evidenceIpfsHash = null;
+      if (complaintForm.file) {
+        const uploadResponse = await FileService.uploadComplaintEvidence(complaintForm.file);
+        evidenceIpfsHash = uploadResponse.data.ipfsHash;
+      }
+
+      await ProductService.raiseComplaint(
+        complaintOrder.id,
+        complaintForm.reason,
+        evidenceIpfsHash,
+        complaintForm.type
+      );
+
+      window.alert("投诉提交成功。");
+      resetComplaintModal();
+      loadOrders();
+    } catch (error) {
+      window.alert(`投诉提交失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSellerResponse = async (orderId) => {
+    const response = String(sellerResponseForms[orderId] || "").trim();
+    if (!response) {
+      window.alert("请输入卖家答辩内容。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      let evidenceIpfsHash = null;
+      if (sellerEvidenceFiles[orderId]) {
+        const uploadResponse = await FileService.uploadSellerComplaintEvidence(sellerEvidenceFiles[orderId]);
+        evidenceIpfsHash = uploadResponse.data.ipfsHash;
+      }
+
+      await ProductService.respondToComplaint(orderId, response, evidenceIpfsHash);
+      window.alert("卖家答辩提交成功。");
+      setSellerResponseForms((previous) => ({ ...previous, [orderId]: "" }));
+      setSellerEvidenceFiles((previous) => ({ ...previous, [orderId]: null }));
+      loadOrders();
+    } catch (error) {
+      window.alert(`答辩提交失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAfterSalesSubmit = async (order) => {
+    const form = afterSalesForms[order.id] || INITIAL_AFTER_SALES_FORM;
+    if (!String(form.description || "").trim()) {
+      window.alert("请输入售后说明。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      let evidenceIpfsHash = null;
+      if (form.file) {
+        const uploadResponse = await FileService.uploadAfterSalesEvidence(form.file);
+        evidenceIpfsHash = uploadResponse.data.ipfsHash;
+      }
+
+      await ProductService.recordAfterSales({
+        orderId: order.id,
+        type: form.type,
+        componentName: form.componentName,
+        description: form.description,
+        serviceResult: form.serviceResult,
+        evidenceIpfsHash,
+      });
+
+      window.alert("售后记录已保存。");
+      resetAfterSalesForm(order.id);
+      loadOrders();
+    } catch (error) {
+      window.alert(`售后保存失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRecallNotificationUpdate = async (notificationId, status = "acknowledged") => {
+    setLoading(true);
+    try {
+      await ProductService.updateRecallNotificationStatus(notificationId, status);
+      window.alert("Recall notice updated.");
+      loadOrders();
+    } catch (error) {
+      window.alert(`Recall notice update failed: ${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100 pb-10">
+      <div className="bg-white py-4 shadow">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4">
+          <h1 className="text-2xl font-bold text-slate-900">
+            {currentUser?.role === "buyer" ? "我的订单" : "销售订单"}
+          </h1>
+          <button onClick={() => navigate("/home")} className="font-medium text-indigo-600">
+            返回市场
+          </button>
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-7xl space-y-4 px-4 py-8">
+        {loading ? <div className="text-center font-bold text-indigo-600">正在同步订单状态...</div> : null}
+
+        {orders.map((order) => {
+          const ratingForm = ratingForms[order.id] || { score: 5, comment: "" };
+          const shipmentForm = shipmentForms[order.id] || { trackingNumber: "", shippingCarrier: "" };
+          const sellerResponse = sellerResponseForms[order.id] || "";
+          const afterSalesForm = afterSalesForms[order.id] || INITIAL_AFTER_SALES_FORM;
+          const recallNotification = Array.isArray(order.recallNotifications)
+            ? order.recallNotifications[0]
+            : null;
+          const canRecordAfterSales =
+            currentUser?.role === "seller" && [1, 2, 3, 4].includes(order.status);
+
+          return (
+            <div key={order.id} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-500">
+                    订单 #{order.id} | {new Date(order.createdAt).toLocaleString()}
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900">
+                    {order.product?.name}
+                    <span className="ml-2 text-sm font-normal text-slate-500">({order.price} ETH)</span>
+                  </h3>
+                  <div className="text-sm text-slate-600">
+                    {currentUser?.role === "buyer"
+                      ? `卖家：${order.product?.seller?.username}`
+                      : `买家：${order.buyer?.username}`}
+                  </div>
+                </div>
+
+                <div className="flex flex-col items-end gap-2">
+                  <span className={`rounded-full px-3 py-1 text-sm font-semibold ${getStatusClass(order)}`}>
+                    {getOrderStatusLabel(order)}
+                  </span>
+                  <span className="text-xs text-slate-500">物流：{getShippingLabel(order)}</span>
+                </div>
+              </div>
+
+              <div className="grid gap-4 text-sm md:grid-cols-3">
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <div className="text-slate-500">物流单号</div>
+                  <div className="mt-1 font-semibold">{order.trackingNumber || "未提供"}</div>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <div className="text-slate-500">承运方</div>
+                  <div className="mt-1 font-semibold">{order.shippingCarrier || "未提供"}</div>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <div className="text-slate-500">发货时间</div>
+                  <div className="mt-1 font-semibold">
+                    {order.shippedAt ? new Date(order.shippedAt).toLocaleString() : "未提供"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 text-sm md:grid-cols-3">
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                  <div className="text-emerald-700">Payment status</div>
+                  <div className="mt-1 font-semibold text-slate-900">
+                    {getPaymentStatusLabel(order.paymentStatus)}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                  <div className="text-emerald-700">Payment reference</div>
+                  <div className="mt-1 font-semibold text-slate-900">
+                    {order.paymentReference || order.paymentMethod || "N/A"}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                  <div className="text-emerald-700">Paid at</div>
+                  <div className="mt-1 font-semibold text-slate-900">
+                    {formatOrderDateTime(order.paidAt)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 text-sm md:grid-cols-3">
+                <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+                  <div className="text-amber-700">Refund status</div>
+                  <div className="mt-1 font-semibold text-slate-900">
+                    {getRefundStatusLabel(order.refundStatus)}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+                  <div className="text-amber-700">Refund amount</div>
+                  <div className="mt-1 font-semibold text-slate-900">
+                    {formatOrderAmount(order.refundAmount)}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+                  <div className="text-amber-700">Refunded at</div>
+                  <div className="mt-1 font-semibold text-slate-900">
+                    {formatOrderDateTime(order.refundedAt)}
+                  </div>
+                </div>
+              </div>
+
+              {recallNotification ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-rose-800">Recall notice</div>
+                      <div className="mt-1 text-sm text-rose-700">
+                        Status: {getRecallNotificationStatusLabel(recallNotification.status)}
+                      </div>
+                      <div className="mt-1 text-sm text-rose-700">
+                        Notified at: {formatOrderDateTime(recallNotification.notifiedAt)}
+                      </div>
+                      <div className="mt-1 text-sm text-rose-700">
+                        Reason: {order.product?.recallReason || "Recall in progress"}
+                      </div>
+                    </div>
+                    {currentUser?.role === "buyer" &&
+                    !["acknowledged", "closed"].includes(recallNotification.status) ? (
+                      <button
+                        onClick={() =>
+                          handleRecallNotificationUpdate(recallNotification.id, "acknowledged")
+                        }
+                        className="rounded bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+                      >
+                        Acknowledge recall
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {order.comment ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm">
+                  买家评价：{order.comment}（{order.rating}/5）
+                </div>
+              ) : null}
+
+              {order.complaintReason ? (
+                <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm">
+                  <div>
+                    <div className="font-semibold text-rose-700">投诉信息</div>
+                    <div className="mt-1 text-rose-700">
+                      {getComplaintTypeLabel(order.complaintType)} / {order.complaintReason}
+                    </div>
+                  </div>
+                  {order.evidenceIpfsHash ? (
+                    <a
+                      href={`${IPFS_GATEWAY}${order.evidenceIpfsHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-block text-indigo-600 underline"
+                    >
+                      查看买家证据
+                    </a>
+                  ) : null}
+                  {order.sellerResponse ? (
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="font-semibold text-slate-700">卖家答辩</div>
+                      <div className="mt-1 text-slate-600">{order.sellerResponse}</div>
+                      {order.sellerEvidenceIpfsHash ? (
+                        <a
+                          href={`${IPFS_GATEWAY}${order.sellerEvidenceIpfsHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-block text-indigo-600 underline"
+                        >
+                          查看卖家证据
+                        </a>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {order.rulingDetails ? <div className="text-slate-700">裁决：{order.rulingDetails}</div> : null}
+                </div>
+              ) : null}
+
+              {order.afterSalesRecords?.length > 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="mb-3 font-semibold text-slate-800">售后历史</div>
+                  <div className="space-y-3">
+                    {order.afterSalesRecords.map((record) => (
+                      <div key={record.id} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-semibold text-slate-900">{getAfterSalesTypeLabel(record.type)}</span>
+                          <span className="text-xs text-slate-500">
+                            {record.createdAt ? new Date(record.createdAt).toLocaleString() : "未知时间"}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-slate-600">
+                          {record.componentName ? `${record.componentName} / ` : ""}
+                          {record.description}
+                        </div>
+                        <div className="mt-2 text-xs text-slate-500">
+                          结果：{record.serviceResult || "未提供"} | 记录人：{record.creator?.username || "系统"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {currentUser?.role === "buyer" && order.status === 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => handleConfirm(order.id)}
+                    disabled={order.shippingStatus === "pending"}
+                    className={`rounded px-4 py-2 text-white ${
+                      order.shippingStatus === "pending"
+                        ? "cursor-not-allowed bg-slate-300"
+                        : "bg-green-600 hover:bg-green-700"
+                    }`}
+                  >
+                    确认收货
+                  </button>
+                  <button
+                    onClick={() => {
+                      setComplaintOrder(order);
+                      setComplaintForm(INITIAL_COMPLAINT_STATE);
+                    }}
+                    className="rounded bg-rose-600 px-4 py-2 text-white hover:bg-rose-700"
+                  >
+                    发起投诉
+                  </button>
+                </div>
+              ) : null}
+
+              {currentUser?.role === "buyer" && order.status === 1 ? (
+                <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                  <div className="font-semibold text-amber-700">提交评价</div>
+                  <div className="flex items-center gap-2">
+                    <span>评分</span>
+                    <select
+                      value={ratingForm.score}
+                      onChange={(event) => updateRatingForm(order.id, "score", event.target.value)}
+                      className="rounded border border-amber-200 px-2 py-1 text-sm"
+                    >
+                      {[5, 4, 3, 2, 1].map((score) => (
+                        <option key={score} value={score}>
+                          {score}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <textarea
+                    placeholder="请描述你的使用体验。"
+                    className="w-full rounded border border-amber-200 p-2 text-sm"
+                    value={ratingForm.comment}
+                    onChange={(event) => updateRatingForm(order.id, "comment", event.target.value)}
+                  />
+                  <button
+                    onClick={() => handleSubmitRating(order.id)}
+                    className="rounded bg-indigo-600 px-4 py-2 text-white hover:bg-indigo-700"
+                  >
+                    提交评价
+                  </button>
+                </div>
+              ) : null}
+
+              {currentUser?.role === "seller" && order.status === 0 && order.shippingStatus !== "shipped" ? (
+                <div className="space-y-3 rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
+                  <div className="font-semibold text-indigo-700">发货履约</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <input
+                      value={shipmentForm.shippingCarrier}
+                      onChange={(event) => updateShipmentForm(order.id, "shippingCarrier", event.target.value)}
+                      className="rounded border border-indigo-200 px-3 py-2 text-sm"
+                      placeholder="承运方"
+                    />
+                    <input
+                      value={shipmentForm.trackingNumber}
+                      onChange={(event) => updateShipmentForm(order.id, "trackingNumber", event.target.value)}
+                      className="rounded border border-indigo-200 px-3 py-2 text-sm"
+                      placeholder="物流单号"
+                    />
+                  </div>
+                  <button
+                    onClick={() => handleShip(order.id)}
+                    className="rounded bg-indigo-600 px-4 py-2 text-white hover:bg-indigo-700"
+                  >
+                    确认发货
+                  </button>
+                </div>
+              ) : null}
+
+              {canRecordAfterSales ? (
+                <div className="space-y-3 rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
+                  <div className="font-semibold text-cyan-800">记录售后服务</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <select
+                      value={afterSalesForm.type}
+                      onChange={(event) => updateAfterSalesForm(order.id, "type", event.target.value)}
+                      className="rounded border border-cyan-200 px-3 py-2 text-sm"
+                    >
+                      {AFTER_SALES_TYPES.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      value={afterSalesForm.componentName}
+                      onChange={(event) => updateAfterSalesForm(order.id, "componentName", event.target.value)}
+                      className="rounded border border-cyan-200 px-3 py-2 text-sm"
+                      placeholder="部件名称（可选）"
+                    />
+                  </div>
+                  <textarea
+                    rows={3}
+                    value={afterSalesForm.description}
+                    onChange={(event) => updateAfterSalesForm(order.id, "description", event.target.value)}
+                    className="w-full rounded border border-cyan-200 px-3 py-2 text-sm"
+                    placeholder="描述保修、维修、更换或退款的处理情况。"
+                  />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <input
+                      value={afterSalesForm.serviceResult}
+                      onChange={(event) => updateAfterSalesForm(order.id, "serviceResult", event.target.value)}
+                      className="rounded border border-cyan-200 px-3 py-2 text-sm"
+                      placeholder="处理结果"
+                    />
+                    <input
+                      type="file"
+                      accept=".pdf,image/png,image/jpeg"
+                      onChange={(event) => updateAfterSalesForm(order.id, "file", event.target.files[0] || null)}
+                      className="block w-full text-sm text-slate-500 file:mr-4 file:rounded file:border-0 file:bg-cyan-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-cyan-700 hover:file:bg-cyan-200"
+                    />
+                  </div>
+                  <button
+                    onClick={() => handleAfterSalesSubmit(order)}
+                    className="rounded bg-cyan-700 px-4 py-2 text-white hover:bg-cyan-800"
+                  >
+                    保存售后记录
+                  </button>
+                </div>
+              ) : null}
+
+              {currentUser?.role === "seller" && order.status === 3 ? (
+                <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="font-semibold text-slate-800">卖家答辩</div>
+                  <textarea
+                    rows={3}
+                    value={sellerResponse}
+                    onChange={(event) => updateSellerResponseForm(order.id, event.target.value)}
+                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="说明物流状态、商品状态或相关证明事实。"
+                  />
+                  <input
+                    type="file"
+                    accept=".pdf,image/png,image/jpeg"
+                    onChange={(event) =>
+                      setSellerEvidenceFiles((previous) => ({
+                        ...previous,
+                        [order.id]: event.target.files[0] || null,
+                      }))
+                    }
+                    className="block w-full text-sm text-slate-500 file:mr-4 file:rounded file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-slate-700 hover:file:bg-slate-200"
+                  />
+                  <button
+                    onClick={() => handleSellerResponse(order.id)}
+                    className="rounded bg-slate-900 px-4 py-2 text-white hover:bg-slate-800"
+                  >
+                    提交卖家答辩
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+
+        {orders.length === 0 ? <div className="py-10 text-center text-slate-500">暂无订单记录。</div> : null}
+      </div>
+
+      {complaintOrder ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="bg-rose-600 p-4">
+              <h2 className="text-lg font-bold text-white">提交投诉证据</h2>
+            </div>
+
+            <form onSubmit={handleSubmitComplaint} className="p-6">
+              <div className="mb-4 text-sm text-slate-600">
+                当前商品：<span className="font-bold text-slate-800">{complaintOrder.product?.name}</span>
+              </div>
+
+              <div className="mb-4">
+                <label htmlFor="complaint-type" className="mb-1 block text-sm font-medium text-slate-700">
+                  投诉类型
+                </label>
+                <select
+                  id="complaint-type"
+                  value={complaintForm.type}
+                  onChange={(event) =>
+                    setComplaintForm((previous) => ({
+                      ...previous,
+                      type: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded border border-slate-300 p-2"
+                >
+                  {COMPLAINT_TYPES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="mb-4">
+                <label htmlFor="complaint-reason" className="mb-1 block text-sm font-medium text-slate-700">
+                  投诉原因 <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  id="complaint-reason"
+                  required
+                  rows={3}
+                  className="w-full rounded border border-slate-300 p-2"
+                  placeholder="请详细描述问题。"
+                  value={complaintForm.reason}
+                  onChange={(event) =>
+                    setComplaintForm((previous) => ({
+                      ...previous,
+                      reason: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="mb-6">
+                <label htmlFor="complaint-evidence" className="mb-1 block text-sm font-medium text-slate-700">
+                  证据文件（可选）
+                </label>
+                <input
+                  id="complaint-evidence"
+                  type="file"
+                  accept=".pdf,image/png,image/jpeg"
+                  onChange={(event) =>
+                    setComplaintForm((previous) => ({
+                      ...previous,
+                      file: event.target.files[0] || null,
+                    }))
+                  }
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:rounded file:border-0 file:bg-rose-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-rose-700 hover:file:bg-rose-100"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  onClick={resetComplaintModal}
+                  className="rounded bg-slate-100 px-4 py-2 text-slate-700 hover:bg-slate-200"
+                  disabled={loading}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className={`rounded px-4 py-2 font-bold text-white ${
+                    loading ? "cursor-wait bg-rose-400" : "bg-rose-600 hover:bg-rose-700"
+                  }`}
+                >
+                  {loading ? "提交中..." : "提交投诉"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
