@@ -7,6 +7,16 @@ module.exports = (app) => {
   router.post("/login", auth.signin);
   router.post("/approve", [verifyToken, requireRoles("regulator", "admin")], auth.approveSeller);
   router.get(
+    "/blacklisted-sellers",
+    [verifyToken, requireRoles("regulator", "admin")],
+    auth.getBlacklistedSellers
+  );
+  router.post(
+    "/unblacklist",
+    [verifyToken, requireRoles("regulator", "admin")],
+    auth.unblacklistSeller
+  );
+  router.get(
     "/pending-sellers",
     [verifyToken, requireRoles("regulator", "admin")],
     auth.getPendingSellers

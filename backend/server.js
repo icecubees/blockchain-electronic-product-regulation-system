@@ -1,8 +1,10 @@
 require("dotenv").config();
+require("./config/env.validation").validateRequiredEnv();
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const db = require("./models");
+const { ensureRuntimeSchema } = require("./config/runtime-schema");
 
 const app = express();
 
@@ -11,7 +13,9 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 db.sequelize
-  .sync({ force: false })
+  .authenticate()
+  .then(() => ensureRuntimeSchema(db.sequelize, db.Sequelize))
+  .then(() => db.sequelize.sync({ force: false }))
   .then(() => {
     console.log("Database synced successfully");
   })
@@ -28,7 +32,7 @@ require("./routes/product.routes.js")(app);
 require("./routes/file.routes.js")(app);
 require("./routes/audit.routes.js")(app);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

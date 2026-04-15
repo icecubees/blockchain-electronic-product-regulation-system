@@ -1,9 +1,10 @@
 const ProductRegulation = artifacts.require("ProductRegulation");
 
 module.exports = async function (deployer) {
+  const devOnlyAiOraclePrivateKey =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
   const aiOraclePrivateKey =
-    process.env.AI_ORACLE_PRIVATE_KEY ||
-    "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4f5f9e5d7b8c6a7d1";
+    process.env.AI_ORACLE_PRIVATE_KEY || devOnlyAiOraclePrivateKey;
   const unlockedAccounts = await web3.eth.getAccounts();
 
   const aiOracleAddress = web3.eth.accounts.privateKeyToAccount(aiOraclePrivateKey).address;

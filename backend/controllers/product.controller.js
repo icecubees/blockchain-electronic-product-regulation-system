@@ -3,6 +3,8 @@ const FormData = require("form-data");
 
 const db = require("../models");
 const auditService = require("../services/audit.service");
+const integrationJobService = require("../services/integration-job.service");
+const { syncSellerBlacklist } = require("../services/seller-blacklist.service");
 const {
   web3,
   contract,
@@ -13,9 +15,522 @@ const {
 const Product = db.product;
 const Order = db.order;
 const User = db.user;
+const AuditLog = db.auditLog;
+const AfterSalesRecord = db.afterSalesRecord;
+const RecallNotification = db.recallNotification;
 const Op = db.Sequelize.Op;
 
-async function callAiAuditService(description, uploadedFile) {
+const ELECTRONIC_PRODUCT_CATEGORIES = [
+  "mobile_phone",
+  "laptop",
+  "tablet",
+  "earphone",
+  "charger",
+  "power_bank",
+  "smart_watch",
+  "camera",
+  "router",
+  "accessory",
+];
+
+const REVIEW_REASON_DEFINITIONS = [
+  { code: "missing_ccc_information", label: "Missing CCC information" },
+  { code: "missing_device_identifier", label: "Missing device identifier" },
+  { code: "undisclosed_refurbished_status", label: "Undisclosed refurbished status" },
+  { code: "battery_safety_concern", label: "Battery safety concern" },
+  { code: "report_model_mismatch", label: "Report and declared model mismatch" },
+  { code: "suspected_counterfeit", label: "Suspected counterfeit or unauthorized product" },
+];
+
+const REVIEW_REASON_CODE_SET = new Set(REVIEW_REASON_DEFINITIONS.map((item) => item.code));
+const COMPLAINT_TYPE_OPTIONS = new Set([
+  "battery_issue",
+  "counterfeit_suspected",
+  "refurbished_not_disclosed",
+  "serial_number_mismatch",
+  "performance_issue",
+  "accessory_mismatch",
+  "safety_risk",
+]);
+const AFTER_SALES_TYPE_OPTIONS = new Set([
+  "warranty_claim",
+  "repair",
+  "component_replacement",
+  "quality_refund",
+]);
+const RECALL_NOTIFICATION_STATUSES = new Set(["pending", "viewed", "acknowledged", "closed"]);
+
+function normalizeOptionalString(value, fallback = null) {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const normalized = String(value ?? "").trim();
+  return normalized ? normalized : null;
+}
+
+function parseReasonCodes(input) {
+  if (input === undefined || input === null || input === "") {
+    return [];
+  }
+
+  let values = input;
+  if (typeof input === "string") {
+    try {
+      values = JSON.parse(input);
+    } catch (error) {
+      values = String(input)
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+
+  if (!Array.isArray(values)) {
+    values = [values];
+  }
+
+  const normalized = values
+    .map((item) => String(item || "").trim())
+    .filter((item) => REVIEW_REASON_CODE_SET.has(item));
+
+  return Array.from(new Set(normalized));
+}
+
+function normalizeComplaintType(value, fallback = null) {
+  const normalized = normalizeOptionalString(value, fallback);
+  if (!normalized) {
+    return normalized;
+  }
+
+  return COMPLAINT_TYPE_OPTIONS.has(normalized) ? normalized : fallback;
+}
+
+function normalizeAfterSalesType(value, fallback = null) {
+  const normalized = normalizeOptionalString(value, fallback);
+  if (!normalized) {
+    return normalized;
+  }
+
+  return AFTER_SALES_TYPE_OPTIONS.has(normalized) ? normalized : fallback;
+}
+
+function normalizeOptionalDate(value, fallback = null) {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (value === null || value === "") {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+function normalizeBooleanInput(value, fallback = null) {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function normalizeBatteryHealth(value, fallback = null) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function normalizeCategory(value, fallback = null) {
+  const normalized = normalizeOptionalString(value, fallback);
+  if (!normalized) {
+    return normalized;
+  }
+
+  return normalized.toLowerCase();
+}
+
+function parseBooleanQuery(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  return normalizeBooleanInput(value, null);
+}
+
+function contractSupportsMethod(name, inputCount = null) {
+  const methods = contract?.options?.jsonInterface || [];
+  return methods.some(
+    (item) =>
+      item.type === "function" &&
+      item.name === name &&
+      (inputCount === null || (item.inputs || []).length === inputCount)
+  );
+}
+
+function hashSummaryValue(value) {
+  const normalized = normalizeOptionalString(value, null);
+  if (!normalized) {
+    return null;
+  }
+
+  return web3.utils.soliditySha3({ type: "string", value: normalized });
+}
+
+function deriveRiskLevel(product) {
+  if (product.recallStatus) {
+    return 2;
+  }
+  if (product.batterySafetyPassed === false || product.chargerSafetyPassed === false) {
+    return 2;
+  }
+  if (product.inspectionConclusion === "fail") {
+    return 2;
+  }
+  if (
+    product.isUsed ||
+    product.isRefurbished ||
+    product.inspectionConclusion === "conditional_pass"
+  ) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function validateElectronicFields(fields) {
+  if (fields.category && !ELECTRONIC_PRODUCT_CATEGORIES.includes(fields.category)) {
+    return `Unsupported category. Allowed values: ${ELECTRONIC_PRODUCT_CATEGORIES.join(", ")}`;
+  }
+
+  if (
+    fields.batteryHealth !== null &&
+    fields.batteryHealth !== undefined &&
+    (!Number.isInteger(fields.batteryHealth) || fields.batteryHealth < 0 || fields.batteryHealth > 100)
+  ) {
+    return "Battery health must be an integer between 0 and 100";
+  }
+
+  return null;
+}
+
+function buildElectronicReviewChecklist(product) {
+  const issues = [];
+
+  if (["mobile_phone", "tablet"].includes(product.category)) {
+    if (!normalizeOptionalString(product.brand, null)) {
+      issues.push("Brand is required for mobile phones and tablets");
+    }
+    if (!normalizeOptionalString(product.model, null)) {
+      issues.push("Model is required for mobile phones and tablets");
+    }
+    if (!normalizeOptionalString(product.serialNumber, null)) {
+      issues.push("Serial number or IMEI is required for mobile phones and tablets");
+    }
+  }
+
+  if (["charger", "power_bank"].includes(product.category)) {
+    if (!normalizeOptionalString(product.cccNumber, null)) {
+      issues.push("CCC number is required for chargers and power banks");
+    }
+
+    if (product.chargerSafetyPassed !== true && product.batterySafetyPassed !== true) {
+      issues.push("At least one charger or battery safety check must be marked as passed");
+    }
+  }
+
+  if (product.isUsed === true || product.isRefurbished === true) {
+    if (!normalizeOptionalString(product.appearanceGrade, null)) {
+      issues.push("Appearance grade is required for used or refurbished devices");
+    }
+    if (product.repairHistoryDeclared === null || product.repairHistoryDeclared === undefined) {
+      issues.push("Repair history declaration is required for used or refurbished devices");
+    }
+  }
+
+  return issues;
+}
+
+function getSuggestedReasonCodes(product, issues = []) {
+  const suggestions = new Set();
+
+  if (issues.some((item) => item.toLowerCase().includes("ccc"))) {
+    suggestions.add("missing_ccc_information");
+  }
+  if (issues.some((item) => item.toLowerCase().includes("serial number") || item.toLowerCase().includes("imei"))) {
+    suggestions.add("missing_device_identifier");
+  }
+  if ((product.isUsed || product.isRefurbished) && (product.repairHistoryDeclared === null || product.repairHistoryDeclared === undefined)) {
+    suggestions.add("undisclosed_refurbished_status");
+  }
+  if (product.batterySafetyPassed === false || product.chargerSafetyPassed === false) {
+    suggestions.add("battery_safety_concern");
+  }
+
+  return Array.from(suggestions);
+}
+
+function attachReviewInsights(product) {
+  const missingReviewItems = buildElectronicReviewChecklist(product);
+  product.dataValues.missingReviewItems = missingReviewItems;
+  product.dataValues.suggestedReasonCodes = getSuggestedReasonCodes(product, missingReviewItems);
+  product.dataValues.auditReasonCodes = parseReasonCodes(product.auditReasonCodes);
+  return product;
+}
+
+function buildCreateProductMethod(productPayload, sellerWallet) {
+  if (contractSupportsMethod("createProduct", 12)) {
+    return contract.methods.createProduct(
+      productPayload.name,
+      web3.utils.toWei(productPayload.price.toString(), "ether"),
+      productPayload.ipfsHash || "NoReport",
+      productPayload.qualificationHash || "NoCert",
+      productPayload.stock,
+      sellerWallet,
+      productPayload.brand || "",
+      productPayload.model || "",
+      productPayload.category || "",
+      hashSummaryValue(productPayload.serialNumber) || "",
+      hashSummaryValue(productPayload.cccNumber) || "",
+      deriveRiskLevel(productPayload)
+    );
+  }
+
+  return contract.methods.createProduct(
+    productPayload.name,
+    web3.utils.toWei(productPayload.price.toString(), "ether"),
+    productPayload.ipfsHash || "NoReport",
+    productPayload.qualificationHash || "NoCert",
+    productPayload.stock,
+    sellerWallet
+  );
+}
+
+async function syncExtendedChainLifecycle(product, operatorAccount) {
+  const chainId = product.onChainId > 0 ? product.onChainId : product.id;
+  const txHashes = {};
+
+  if (contractSupportsMethod("updateProductCompliance", 4)) {
+    const receipt = await sendContractTransaction({
+      account: operatorAccount,
+      method: contract.methods.updateProductCompliance(
+        chainId,
+        product.category || "",
+        hashSummaryValue(product.cccNumber) || "",
+        deriveRiskLevel(product)
+      ),
+      gas: 700000,
+    });
+    txHashes.compliance = receipt.transactionHash;
+  }
+
+  if (product.isRefurbished && contractSupportsMethod("declareProductRefurbish", 3)) {
+    const receipt = await sendContractTransaction({
+      account: accounts.market,
+      method: contract.methods.declareProductRefurbish(
+        chainId,
+        deriveRiskLevel(product),
+        product.description || "Refurbished device declared"
+      ),
+      gas: 600000,
+    });
+    txHashes.refurbish = receipt.transactionHash;
+  }
+
+  return txHashes;
+}
+
+async function recordLifecycleAuditEntries({ product, operator, req, txHashes = {} }) {
+  await auditService.record({
+    operator,
+    action: "PRODUCT_COMPLIANCE_UPDATED",
+    targetType: "PRODUCT",
+    targetId: product.id,
+    result: "SUCCESS",
+    details: {
+      category: product.category,
+      cccNumberHash: hashSummaryValue(product.cccNumber),
+      riskLevel: deriveRiskLevel(product),
+    },
+    req,
+    txHash: txHashes.compliance,
+  });
+
+  if (product.isRefurbished) {
+    await auditService.record({
+      operator,
+      action: "PRODUCT_REFURBISH_DECLARED",
+      targetType: "PRODUCT",
+      targetId: product.id,
+      result: "SUCCESS",
+      details: {
+        riskLevel: deriveRiskLevel(product),
+        appearanceGrade: product.appearanceGrade,
+      },
+      req,
+      txHash: txHashes.refurbish,
+    });
+  }
+
+  if (product.warrantyUntil) {
+    await auditService.record({
+      operator,
+      action: "WARRANTY_UPDATED",
+      targetType: "PRODUCT",
+      targetId: product.id,
+      result: "SUCCESS",
+      details: {
+        warrantyUntil: product.warrantyUntil,
+      },
+      req,
+    });
+  }
+}
+
+function buildElectronicProductFields(input, currentProduct = null) {
+  return {
+    brand: normalizeOptionalString(input.brand, currentProduct?.brand ?? null),
+    model: normalizeOptionalString(input.model, currentProduct?.model ?? null),
+    category: normalizeCategory(input.category, currentProduct?.category ?? null),
+    serialNumber: normalizeOptionalString(input.serialNumber, currentProduct?.serialNumber ?? null),
+    batchNo: normalizeOptionalString(input.batchNo, currentProduct?.batchNo ?? null),
+    manufactureDate: normalizeOptionalDate(
+      input.manufactureDate,
+      currentProduct?.manufactureDate ?? null
+    ),
+    warrantyUntil: normalizeOptionalDate(
+      input.warrantyUntil,
+      currentProduct?.warrantyUntil ?? null
+    ),
+    isUsed: normalizeBooleanInput(input.isUsed, currentProduct?.isUsed ?? false),
+    isRefurbished: normalizeBooleanInput(
+      input.isRefurbished,
+      currentProduct?.isRefurbished ?? false
+    ),
+    batteryHealth: normalizeBatteryHealth(input.batteryHealth, currentProduct?.batteryHealth ?? null),
+    accessoryStatus: normalizeOptionalString(
+      input.accessoryStatus,
+      currentProduct?.accessoryStatus ?? null
+    ),
+    cccNumber: normalizeOptionalString(input.cccNumber, currentProduct?.cccNumber ?? null),
+    energyLevel: normalizeOptionalString(input.energyLevel, currentProduct?.energyLevel ?? null),
+    rohsStatus: normalizeOptionalString(input.rohsStatus, currentProduct?.rohsStatus ?? null),
+    inspectionAgency: normalizeOptionalString(
+      input.inspectionAgency,
+      currentProduct?.inspectionAgency ?? null
+    ),
+    inspectionDate: normalizeOptionalDate(
+      input.inspectionDate,
+      currentProduct?.inspectionDate ?? null
+    ),
+    inspectionConclusion: normalizeOptionalString(
+      input.inspectionConclusion,
+      currentProduct?.inspectionConclusion ?? null
+    ),
+    batterySafetyPassed: normalizeBooleanInput(
+      input.batterySafetyPassed,
+      currentProduct?.batterySafetyPassed ?? null
+    ),
+    chargerSafetyPassed: normalizeBooleanInput(
+      input.chargerSafetyPassed,
+      currentProduct?.chargerSafetyPassed ?? null
+    ),
+    appearanceGrade: normalizeOptionalString(
+      input.appearanceGrade,
+      currentProduct?.appearanceGrade ?? null
+    ),
+    functionalTestPassed: normalizeBooleanInput(
+      input.functionalTestPassed,
+      currentProduct?.functionalTestPassed ?? null
+    ),
+    repairHistoryDeclared: normalizeBooleanInput(
+      input.repairHistoryDeclared,
+      currentProduct?.repairHistoryDeclared ?? null
+    ),
+  };
+}
+
+function maskIdentifier(value) {
+  const normalized = normalizeOptionalString(value, null);
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length <= 6) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, 3)}***${normalized.slice(-3)}`;
+}
+
+function buildAiAuditPayload(productPayload = {}, description = "") {
+  return {
+    name: productPayload?.name || "",
+    description: description || productPayload?.description || "",
+    brand: productPayload?.brand || "",
+    model: productPayload?.model || "",
+    category: productPayload?.category || "",
+    serialNumber: productPayload?.serialNumber || "",
+    batchNo: productPayload?.batchNo || "",
+    isUsed: productPayload?.isUsed,
+    isRefurbished: productPayload?.isRefurbished,
+    batteryHealth: productPayload?.batteryHealth,
+    accessoryStatus: productPayload?.accessoryStatus || "",
+    cccNumber: productPayload?.cccNumber || "",
+    energyLevel: productPayload?.energyLevel || "",
+    rohsStatus: productPayload?.rohsStatus || "",
+    inspectionAgency: productPayload?.inspectionAgency || "",
+    inspectionConclusion: productPayload?.inspectionConclusion || "",
+    batterySafetyPassed: productPayload?.batterySafetyPassed,
+    chargerSafetyPassed: productPayload?.chargerSafetyPassed,
+    appearanceGrade: productPayload?.appearanceGrade || "",
+    functionalTestPassed: productPayload?.functionalTestPassed,
+    repairHistoryDeclared: productPayload?.repairHistoryDeclared,
+  };
+}
+
+function normalizeAiAssessment(responseData = {}) {
+  const label = String(responseData?.label || responseData?.result || "FAIL").toUpperCase();
+  const safeLabel = ["PASS", "REVIEW", "FAIL"].includes(label) ? label : "FAIL";
+
+  return {
+    label: safeLabel,
+    result: safeLabel === "PASS" ? "PASS" : "FAIL",
+    confidence: Number(responseData?.confidence || 0),
+    passProbability: Number(responseData?.pass_probability || 0),
+    reasonHints: Array.isArray(responseData?.reason_hints) ? responseData.reason_hints : [],
+    modelVersion: responseData?.model_version || null,
+    shouldBlock: safeLabel === "FAIL",
+    requiresManualReview: safeLabel === "REVIEW",
+    isApprovedLike: safeLabel !== "FAIL",
+  };
+}
+
+async function callAiAuditService(description, uploadedFile, productPayload = null) {
   try {
     const form = new FormData();
 
@@ -31,16 +546,35 @@ async function callAiAuditService(description, uploadedFile) {
       });
     }
 
+    if (productPayload) {
+      form.append("payload", JSON.stringify(buildAiAuditPayload(productPayload, description)));
+    }
+
     const response = await axios.post("http://127.0.0.1:5000/audit", form, {
       headers: { ...form.getHeaders() },
       maxBodyLength: Infinity,
     });
 
-    return response.data.result === "PASS";
+    return normalizeAiAssessment(response.data);
   } catch (error) {
     console.error("AI service call failed:", error.message);
-    return false;
+    return {
+      label: "UNAVAILABLE",
+      result: "UNAVAILABLE",
+      confidence: 0,
+      passProbability: 0,
+      reasonHints: [],
+      modelVersion: null,
+      shouldBlock: false,
+      requiresManualReview: true,
+      isApprovedLike: false,
+      serviceUnavailable: true,
+    };
   }
+}
+
+function isAiServiceUnavailable(aiAssessment) {
+  return Boolean(aiAssessment?.serviceUnavailable);
 }
 
 function signAiAuditResult(productId, isPass) {
@@ -53,44 +587,622 @@ function signAiAuditResult(productId, isPass) {
   return { payloadHash, signature, oracleAddress: accounts.aiOracle.address };
 }
 
+async function getSellerTransactionCount(sellerId) {
+  return Order.count({
+    include: [
+      {
+        model: Product,
+        as: "product",
+        where: { sellerId },
+      },
+    ],
+    where: {
+      status: { [Op.in]: [1, 2] },
+    },
+  });
+}
+
 async function enrichSellerReputation(product) {
-  try {
-    const sellerData = await contract.methods.sellers(product.seller.ethAddress).call();
-    product.dataValues.sellerScore = parseInt(sellerData.reputationScore, 10);
-  } catch (error) {
-    product.dataValues.sellerScore = 60;
-  }
+  const sellerSync = await syncSellerBlacklist(product.seller);
+  product.dataValues.sellerScore = sellerSync.reputationScore;
+  product.dataValues.sellerChainBlacklisted = sellerSync.isBlacklisted;
 
   try {
-    const txCount = await Order.count({
-      include: [
-        {
-          model: Product,
-          as: "product",
-          where: { sellerId: product.seller.id },
-        },
-      ],
-      where: {
-        status: { [Op.in]: [1, 2] },
-      },
-    });
-    product.dataValues.sellerTxCount = txCount;
+    product.dataValues.sellerTxCount = await getSellerTransactionCount(product.seller.id);
   } catch (error) {
     product.dataValues.sellerTxCount = 0;
   }
+}
+
+async function buildProductRiskProfile(product, sellerSync = null) {
+  const [complaintCount, refundCount, repairCount, reusedCccCount, reusedSerialCount, sellerProfile] =
+    await Promise.all([
+      Order.count({
+        where: {
+          productId: product.id,
+          status: {
+            [Op.in]: [3, 4],
+          },
+        },
+      }),
+      Order.count({
+        where: {
+          productId: product.id,
+          status: 4,
+        },
+      }),
+      AfterSalesRecord
+        ? AfterSalesRecord.count({
+            where: {
+              productId: product.id,
+            },
+          })
+        : Promise.resolve(0),
+      product.cccNumber
+        ? Product.count({
+            where: {
+              cccNumber: product.cccNumber,
+              id: {
+                [Op.ne]: product.id,
+              },
+            },
+          })
+        : Promise.resolve(0),
+      product.serialNumber
+        ? Product.count({
+            where: {
+              serialNumber: product.serialNumber,
+              id: {
+                [Op.ne]: product.id,
+              },
+            },
+          })
+        : Promise.resolve(0),
+      sellerSync
+        ? Promise.resolve(sellerSync)
+        : product.seller
+          ? syncSellerBlacklist(product.seller)
+          : Promise.resolve({ isBlacklisted: false, reputationScore: 60 }),
+    ]);
+
+  const riskTags = [];
+  if (complaintCount >= 2) {
+    riskTags.push("high_complaint_frequency");
+  }
+  if (refundCount >= 1) {
+    riskTags.push("refund_history");
+  }
+  if (reusedCccCount > 0) {
+    riskTags.push("reused_ccc_number");
+  }
+  if (reusedSerialCount > 0) {
+    riskTags.push("reused_serial_pattern");
+  }
+  if (repairCount >= 2) {
+    riskTags.push("frequent_after_sales");
+  }
+  if (product.recallStatus) {
+    riskTags.push("recalled_device");
+  }
+  if (sellerProfile?.isBlacklisted) {
+    riskTags.push("seller_blacklisted");
+  }
+  if (product.isRefurbished && product.repairHistoryDeclared !== true) {
+    riskTags.push("refurbish_disclosure_gap");
+  }
+
+  let riskLevel = "low";
+  if (
+    riskTags.some((tag) =>
+      ["recalled_device", "seller_blacklisted", "reused_serial_pattern"].includes(tag)
+    ) || refundCount >= 2
+  ) {
+    riskLevel = "high";
+  } else if (riskTags.length > 0 || complaintCount >= 1) {
+    riskLevel = "medium";
+  }
+
+  return {
+    riskLevel,
+    riskTags,
+    complaintCount,
+    refundCount,
+    repairCount,
+    reusedCccCount,
+    reusedSerialCount,
+  };
+}
+
+async function attachDerivedRiskProfile(product) {
+  const sellerSync = {
+    isBlacklisted: Boolean(product.dataValues?.sellerChainBlacklisted || product.seller?.isBlacklisted),
+    reputationScore: product.dataValues?.sellerScore ?? 60,
+  };
+  product.dataValues.riskProfile = await buildProductRiskProfile(product, sellerSync);
+  return product;
+}
+
+async function getChainProductSnapshot(product) {
+  const fallbackChainId = product.onChainId > 0 ? product.onChainId : product.id;
+  const fallback = {
+    chainProductId: fallbackChainId,
+    isAudited: product.auditStatus === 1,
+    isDelisted: product.auditStatus === 2 && product.stock <= 0,
+    stock: product.stock,
+    sellerWallet: product.seller?.ethAddress || null,
+    brand: product.brand || null,
+    model: product.model || null,
+    category: product.category || null,
+    deviceIdHash: hashSummaryValue(product.serialNumber),
+    cccNumberHash: hashSummaryValue(product.cccNumber),
+    riskLevel: deriveRiskLevel(product),
+    recallFlag: Boolean(product.recallStatus),
+    exists: false,
+    source: "db_derived",
+  };
+
+  try {
+    const chainProduct = await contract.methods.products(fallbackChainId).call();
+    if (!chainProduct || !chainProduct.exists) {
+      return fallback;
+    }
+
+    return {
+      chainProductId: parseInt(chainProduct.id, 10) || fallbackChainId,
+      isAudited: Boolean(chainProduct.isAudited),
+      isDelisted: Boolean(chainProduct.isDelisted),
+      stock: parseInt(chainProduct.stock, 10) || 0,
+      sellerWallet: chainProduct.seller || fallback.sellerWallet,
+      brand: chainProduct.brand || fallback.brand,
+      model: chainProduct.model || fallback.model,
+      category: chainProduct.category || fallback.category,
+      deviceIdHash: chainProduct.deviceIdHash || fallback.deviceIdHash,
+      cccNumberHash: chainProduct.cccNumberHash || fallback.cccNumberHash,
+      riskLevel:
+        chainProduct.riskLevel !== undefined && chainProduct.riskLevel !== null
+          ? parseInt(chainProduct.riskLevel, 10)
+          : fallback.riskLevel,
+      recallFlag:
+        chainProduct.recallFlag !== undefined && chainProduct.recallFlag !== null
+          ? Boolean(chainProduct.recallFlag)
+          : fallback.recallFlag,
+      exists: Boolean(chainProduct.exists),
+      source:
+        chainProduct.brand ||
+        chainProduct.model ||
+        chainProduct.category ||
+        chainProduct.deviceIdHash ||
+        chainProduct.cccNumberHash ||
+        chainProduct.recallFlag !== undefined
+          ? "chain_extended"
+          : "chain_legacy",
+    };
+  } catch (error) {
+    return fallback;
+  }
+}
+
+async function buildProductTraceDetails(product) {
+  const [orders, afterSalesRecords] = await Promise.all([
+    Order.findAll({
+      where: { productId: product.id },
+      include: [
+        {
+          model: User,
+          as: "buyer",
+          attributes: ["id", "username"],
+        },
+        {
+          model: RecallNotification,
+          as: "recallNotifications",
+        },
+      ],
+      order: [["createdAt", "ASC"]],
+    }),
+    AfterSalesRecord
+      ? AfterSalesRecord.findAll({
+          where: { productId: product.id },
+          include: [
+            {
+              model: User,
+              as: "creator",
+              attributes: ["id", "username", "role"],
+            },
+          ],
+          order: [["createdAt", "ASC"]],
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const orderIdStrings = orders.map((order) => String(order.id));
+  const productTargetId = String(product.id);
+
+  const [sellerSync, chainSnapshot, sellerTxCount, traceLogs, reviewer, riskProfile] = await Promise.all([
+    syncSellerBlacklist(product.seller),
+    getChainProductSnapshot(product),
+    getSellerTransactionCount(product.seller.id),
+    AuditLog.findAll({
+      where: {
+        [Op.or]: [
+          {
+            targetType: "PRODUCT",
+            targetId: productTargetId,
+          },
+          ...(orderIdStrings.length > 0
+            ? [
+                {
+                  targetType: "ORDER",
+                  targetId: {
+                    [Op.in]: orderIdStrings,
+                  },
+                },
+              ]
+            : []),
+        ],
+      },
+      order: [["createdAt", "ASC"]],
+    }),
+    product.auditBy
+      ? User.findByPk(product.auditBy, { attributes: ["id", "username", "role"] })
+      : Promise.resolve(null),
+    buildProductRiskProfile(product),
+  ]);
+
+  const complaintCount = orders.filter((order) => [3, 4].includes(order.status)).length;
+  const normalizedTimeline = traceLogs
+    .map((log) => ({
+      id: log.id,
+      entityType: log.targetType,
+      entityId: log.targetId,
+      action: log.action,
+      result: log.result,
+      details: log.details,
+      txHash: log.txHash,
+      ipfsHash: log.ipfsHash,
+      createdAt: log.createdAt,
+    }))
+    .sort((left, right) => new Date(left.createdAt) - new Date(right.createdAt));
+
+  return {
+    productId: product.id,
+    chainProductId: chainSnapshot.chainProductId,
+    name: product.name,
+    description: product.description,
+    brand: product.brand,
+    model: product.model,
+    category: product.category,
+    serialNumberMasked: maskIdentifier(product.serialNumber),
+    batchNo: product.batchNo,
+    manufactureDate: product.manufactureDate,
+    warrantyUntil: product.warrantyUntil,
+    isUsed: Boolean(product.isUsed),
+    isRefurbished: Boolean(product.isRefurbished),
+    batteryHealth: product.batteryHealth,
+    accessoryStatus: product.accessoryStatus,
+    cccNumber: product.cccNumber,
+    energyLevel: product.energyLevel,
+    rohsStatus: product.rohsStatus,
+    compliance: {
+      inspectionAgency: product.inspectionAgency,
+      inspectionDate: product.inspectionDate,
+      inspectionConclusion: product.inspectionConclusion,
+      batterySafetyPassed: product.batterySafetyPassed,
+      chargerSafetyPassed: product.chargerSafetyPassed,
+      appearanceGrade: product.appearanceGrade,
+      functionalTestPassed: product.functionalTestPassed,
+      repairHistoryDeclared: product.repairHistoryDeclared,
+    },
+    review: {
+      reasonCodes: parseReasonCodes(product.auditReasonCodes),
+      reasonCodeOptions: REVIEW_REASON_DEFINITIONS,
+      missingReviewItems: buildElectronicReviewChecklist(product),
+    },
+    recall: {
+      recallStatus: Boolean(product.recallStatus),
+      recallReason: product.recallReason,
+      recallNoticeAt: product.recallNoticeAt,
+      recallBatchNo: product.recallBatchNo,
+    },
+    price: product.price,
+    stock: product.stock,
+    auditStatus: product.auditStatus,
+    auditReason: product.auditReason,
+    ipfsHash: product.ipfsHash,
+    qualificationHash: product.qualificationHash,
+    txHash: product.txHash,
+    createdAt: product.createdAt,
+    auditAt: product.auditAt,
+    delistedAt: product.delistedAt,
+    delistReason: product.delistReason,
+    seller: {
+      id: product.seller.id,
+      username: product.seller.username,
+      ethAddress: product.seller.ethAddress,
+      isBlacklisted: sellerSync.isBlacklisted,
+      reputationScore: sellerSync.reputationScore,
+      completedTransactionCount: sellerTxCount,
+      qualificationType: product.seller.qualificationType || null,
+    },
+    reviewer: reviewer
+      ? {
+          id: reviewer.id,
+          username: reviewer.username,
+          role: reviewer.role,
+        }
+      : null,
+    chain: chainSnapshot,
+    chainSummary: {
+      brand: chainSnapshot.brand,
+      model: chainSnapshot.model,
+      category: chainSnapshot.category,
+      deviceIdHash: chainSnapshot.deviceIdHash,
+      cccNumberHash: chainSnapshot.cccNumberHash,
+      riskLevel: chainSnapshot.riskLevel,
+      recallFlag: chainSnapshot.recallFlag,
+    },
+    metrics: {
+      orderCount: orders.length,
+      complaintCount,
+    },
+    riskProfile,
+    orders: orders.map((order) => ({
+      id: order.id,
+      onChainId: order.onChainId,
+      buyer: order.buyer
+        ? {
+            id: order.buyer.id,
+            username: order.buyer.username,
+          }
+        : null,
+      price: order.price,
+      status: order.status,
+      shippingStatus: order.shippingStatus,
+      trackingNumber: order.trackingNumber,
+      shippingCarrier: order.shippingCarrier,
+      shippedAt: order.shippedAt,
+      buyerConfirmedAt: order.buyerConfirmedAt,
+      rating: order.rating,
+      comment: order.comment,
+      complaintType: order.complaintType,
+      complaintReason: order.complaintReason,
+      evidenceIpfsHash: order.evidenceIpfsHash,
+      sellerResponse: order.sellerResponse,
+      sellerEvidenceIpfsHash: order.sellerEvidenceIpfsHash,
+      sellerRespondedAt: order.sellerRespondedAt,
+      rulingForBuyer: order.rulingForBuyer,
+      rulingDetails: order.rulingDetails,
+      recallNotifications: Array.isArray(order.recallNotifications)
+        ? order.recallNotifications.map((notification) => serializeRecallNotification(notification))
+        : [],
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+    })),
+    afterSalesRecords: afterSalesRecords.map((record) => ({
+      ...serializeAfterSalesRecord(record),
+    })),
+    timeline: normalizedTimeline,
+  };
+}
+
+function serializeAfterSalesRecord(record) {
+  return {
+    id: record.id,
+    orderId: record.orderId,
+    productId: record.productId,
+    type: record.type,
+    componentName: record.componentName,
+    description: record.description,
+    serviceResult: record.serviceResult,
+    evidenceIpfsHash: record.evidenceIpfsHash,
+    createdAt: record.createdAt,
+    creator: record.creator
+      ? {
+          id: record.creator.id,
+          username: record.creator.username,
+          role: record.creator.role,
+        }
+      : null,
+  };
+}
+
+function serializeRecallNotification(notification) {
+  return {
+    id: notification.id,
+    buyerId: notification.buyerId,
+    productId: notification.productId,
+    orderId: notification.orderId,
+    status: notification.status,
+    notifiedAt: notification.notifiedAt,
+    viewedAt: notification.viewedAt,
+    acknowledgedAt: notification.acknowledgedAt,
+    product: notification.product
+      ? {
+          id: notification.product.id,
+          name: notification.product.name,
+          recallStatus: notification.product.recallStatus,
+          recallReason: notification.product.recallReason,
+          recallNoticeAt: notification.product.recallNoticeAt,
+          recallBatchNo: notification.product.recallBatchNo,
+        }
+      : null,
+    order: notification.order
+      ? {
+          id: notification.order.id,
+          status: notification.order.status,
+          shippingStatus: notification.order.shippingStatus,
+        }
+      : null,
+  };
 }
 
 function getOrderChainId(order) {
   return order.onChainId > 0 ? order.onChainId : order.id;
 }
 
+function getUpdateLock(transaction) {
+  return transaction?.LOCK?.UPDATE;
+}
+
+async function withTransaction(work) {
+  return db.sequelize.transaction(async (transaction) => work(transaction));
+}
+
+async function findProductForUpdate(productId, transaction) {
+  return Product.findByPk(productId, {
+    transaction,
+    lock: getUpdateLock(transaction),
+  });
+}
+
+async function queueIntegrationJob({
+  jobType,
+  targetType,
+  targetId = null,
+  status = integrationJobService.JOB_STATUS.PENDING,
+  payload = null,
+  error,
+  req,
+}) {
+  return integrationJobService.createJob({
+    jobType,
+    targetType,
+    targetId,
+    status,
+    payload,
+    error,
+    operator: req?.user || null,
+    req,
+  });
+}
+
+function parseIntegerQuery(value, fallbackValue, options = {}) {
+  if (value === undefined || value === null || value === "") {
+    return fallbackValue;
+  }
+
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallbackValue;
+  }
+
+  if (typeof options.min === "number" && parsed < options.min) {
+    return fallbackValue;
+  }
+
+  if (typeof options.max === "number" && parsed > options.max) {
+    return fallbackValue;
+  }
+
+  return parsed;
+}
+
+function parseNumberQuery(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 exports.getAllProducts = async (req, res) => {
   try {
-    const products = await Product.findAll({
-      where: {
-        auditStatus: 1,
-        stock: { [Op.gt]: 0 },
-      },
+    const page = parseIntegerQuery(req.query.page, 1, { min: 1 });
+    const pageSize = parseIntegerQuery(req.query.pageSize, 12, { min: 1, max: 50 });
+    const keyword = String(req.query.q || "").trim();
+    const sellerId = parseIntegerQuery(req.query.sellerId, null, { min: 1 });
+    const category = normalizeCategory(req.query.category, null);
+    const brand = normalizeOptionalString(req.query.brand, null);
+    const isUsed = parseBooleanQuery(req.query.isUsed);
+    const isRefurbished = parseBooleanQuery(req.query.isRefurbished);
+    const recallStatus = parseBooleanQuery(req.query.recallStatus);
+    const cccStatus = normalizeOptionalString(req.query.cccStatus, null);
+    const minPrice = parseNumberQuery(req.query.minPrice);
+    const maxPrice = parseNumberQuery(req.query.maxPrice);
+    const sortBy = String(req.query.sortBy || "latest");
+
+    const where = {};
+
+    if (recallStatus === true) {
+      where.recallStatus = true;
+    } else {
+      where.auditStatus = 1;
+      where.stock = { [Op.gt]: 0 };
+      where.recallStatus = false;
+    }
+
+    if (keyword) {
+      where[Op.or] = [
+        { name: { [Op.like]: `%${keyword}%` } },
+        { description: { [Op.like]: `%${keyword}%` } },
+      ];
+    }
+
+    if (sellerId) {
+      where.sellerId = sellerId;
+    }
+
+    if (category) {
+      where.category = category;
+    }
+
+    if (brand) {
+      where.brand = { [Op.like]: `%${brand}%` };
+    }
+
+    if (isUsed !== null) {
+      where.isUsed = isUsed;
+    }
+
+    if (isRefurbished !== null) {
+      where.isRefurbished = isRefurbished;
+    }
+
+    if (cccStatus === "missing") {
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        {
+          [Op.or]: [{ cccNumber: null }, { cccNumber: "" }],
+        },
+      ];
+    } else if (cccStatus === "present") {
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        {
+          cccNumber: {
+            [Op.ne]: null,
+          },
+        },
+        {
+          cccNumber: {
+            [Op.ne]: "",
+          },
+        },
+      ];
+    }
+
+    if (minPrice !== null || maxPrice !== null) {
+      where.price = {};
+      if (minPrice !== null) {
+        where.price[Op.gte] = minPrice;
+      }
+      if (maxPrice !== null) {
+        where.price[Op.lte] = maxPrice;
+      }
+    }
+
+    const orderOptions = {
+      latest: [["createdAt", "DESC"]],
+      price_asc: [["price", "ASC"]],
+      price_desc: [["price", "DESC"]],
+      stock_desc: [["stock", "DESC"]],
+    };
+
+    const order = orderOptions[sortBy] || orderOptions.latest;
+    const offset = (page - 1) * pageSize;
+
+    const queryResult = await Product.findAndCountAll({
+      where,
       include: [
         {
           model: User,
@@ -98,12 +1210,28 @@ exports.getAllProducts = async (req, res) => {
           attributes: ["id", "username", "isBlacklisted", "ethAddress"],
         },
       ],
+      order,
+      offset,
+      limit: pageSize,
     });
 
-    const activeProducts = products.filter((product) => !product.seller.isBlacklisted);
-    await Promise.all(activeProducts.map(enrichSellerReputation));
+    await Promise.all(queryResult.rows.map(enrichSellerReputation));
+    await Promise.all(queryResult.rows.map(attachDerivedRiskProfile));
 
-    res.send(activeProducts);
+    const activeProducts = queryResult.rows.filter(
+      (product) => !product.dataValues.sellerChainBlacklisted && !product.seller.isBlacklisted
+    );
+
+    const totalPages = Math.max(1, Math.ceil(queryResult.count / pageSize));
+    res.send({
+      items: activeProducts,
+      pagination: {
+        page,
+        pageSize,
+        total: queryResult.count,
+        totalPages,
+      },
+    });
   } catch (error) {
     res.status(500).send({ message: error.message });
   }
@@ -116,9 +1244,38 @@ exports.getPendingProducts = async (req, res) => {
       include: [{ model: User, as: "seller", attributes: ["id", "username", "ethAddress"] }],
       order: [["createdAt", "DESC"]],
     });
-    res.send(products);
+    res.send(products.map(attachReviewInsights));
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+};
+
+exports.getProductTrace = async (req, res) => {
+  try {
+    const product = await Product.findByPk(req.params.productId, {
+      include: [
+        {
+          model: User,
+          as: "seller",
+          attributes: [
+            "id",
+            "username",
+            "ethAddress",
+            "isBlacklisted",
+            "qualificationType",
+          ],
+        },
+      ],
+    });
+
+    if (!product) {
+      return res.status(404).send({ message: "Product not found" });
+    }
+
+    const traceDetails = await buildProductTraceDetails(product);
+    return res.send(traceDetails);
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
   }
 };
 
@@ -128,7 +1285,7 @@ exports.getMyProducts = async (req, res) => {
       where: { sellerId: req.userId },
       order: [["createdAt", "DESC"]],
     });
-    res.send(products);
+    res.send(products.map(attachReviewInsights));
   } catch (error) {
     res.status(500).send({ message: error.message });
   }
@@ -138,6 +1295,8 @@ exports.addProduct = async (req, res) => {
   try {
     const { name, price, description, ipfsHash, qualificationHash, stock } = req.body;
     const seller = await User.findByPk(req.userId);
+    const electronicFields = buildElectronicProductFields(req.body);
+    const electronicValidationError = validateElectronicFields(electronicFields);
 
     if (!seller) {
       return res.status(404).send({ message: "Seller not found" });
@@ -148,13 +1307,22 @@ exports.addProduct = async (req, res) => {
     if (seller.status !== 1) {
       return res.status(403).send({ message: "Seller account is not approved yet" });
     }
-    if (seller.isBlacklisted) {
+    const sellerSync = await syncSellerBlacklist(seller);
+    if (sellerSync.isBlacklisted) {
       return res.status(403).send({ message: "Your account is blacklisted" });
     }
+    if (electronicValidationError) {
+      return res.status(400).send({ message: electronicValidationError });
+    }
 
-    const aiPassed = await callAiAuditService(description || "", req.file);
+    const aiAssessment = await callAiAuditService(description || "", req.file, {
+      name,
+      description,
+      ...electronicFields,
+    });
+    const degradedToManualReview = isAiServiceUnavailable(aiAssessment);
 
-    if (!aiPassed) {
+    if (aiAssessment.shouldBlock) {
       const rejectedProduct = await Product.create({
         name,
         price,
@@ -164,9 +1332,10 @@ exports.addProduct = async (req, res) => {
         stock: parseInt(stock, 10),
         sellerId: seller.id,
         auditStatus: 2,
-        auditReason: "AI audit rejected this product.",
+        auditReason: "AI pre-audit marked this product as FAIL.",
         onChainId: 0,
         txHash: "AI_REJECTED",
+        ...electronicFields,
       });
 
       await auditService.record({
@@ -175,24 +1344,35 @@ exports.addProduct = async (req, res) => {
         targetType: "PRODUCT",
         targetId: rejectedProduct.id,
         result: "SUCCESS",
-        details: { name },
+        details: {
+          name,
+          aiLabel: aiAssessment.label,
+          aiConfidence: aiAssessment.confidence,
+          aiPassProbability: aiAssessment.passProbability,
+          aiReasonHints: aiAssessment.reasonHints,
+          aiModelVersion: aiAssessment.modelVersion,
+        },
         req,
       });
 
       return res.send({
-        message: "AI audit rejected this product.",
+        message: "AI pre-audit marked this product as FAIL.",
+        aiAssessment,
         product: rejectedProduct,
       });
     }
 
     const receipt = await sendContractTransaction({
       account: accounts.market,
-      method: contract.methods.createProduct(
-        name,
-        web3.utils.toWei(price.toString(), "ether"),
-        ipfsHash || "NoReport",
-        qualificationHash || "NoCert",
-        parseInt(stock, 10),
+      method: buildCreateProductMethod(
+        {
+          name,
+          price: Number(price),
+          ipfsHash,
+          qualificationHash,
+          stock: parseInt(stock, 10),
+          ...electronicFields,
+        },
         seller.ethAddress
       ),
       gas: 2000000,
@@ -208,9 +1388,15 @@ exports.addProduct = async (req, res) => {
       stock: parseInt(stock, 10),
       sellerId: seller.id,
       auditStatus: 0,
+      auditReason: degradedToManualReview
+        ? "AI service unavailable. Routed to manual review."
+        : null,
       txHash: receipt.transactionHash,
       onChainId: chainProductId,
+      ...electronicFields,
     });
+
+    const lifecycleTxHashes = await syncExtendedChainLifecycle(product, accounts.regulator);
 
     await auditService.record({
       operator: req.user,
@@ -218,13 +1404,42 @@ exports.addProduct = async (req, res) => {
       targetType: "PRODUCT",
       targetId: product.id,
       result: "SUCCESS",
-      details: { name, chainProductId },
+      details: {
+        name,
+        chainProductId,
+        aiLabel: aiAssessment.label,
+        aiConfidence: aiAssessment.confidence,
+        aiPassProbability: aiAssessment.passProbability,
+        aiReasonHints: aiAssessment.reasonHints,
+        aiModelVersion: aiAssessment.modelVersion,
+      },
       req,
       txHash: receipt.transactionHash,
     });
 
+    if (degradedToManualReview) {
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_AI_DEGRADED_TO_MANUAL_REVIEW",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          source: "create",
+          name,
+          reason: "AI service unavailable",
+        },
+        req,
+      });
+    }
+
     res.send({
-      message: "AI pre-audit passed. Waiting for regulator review.",
+      message: degradedToManualReview
+        ? "AI pre-audit is temporarily unavailable. Routed to manual review."
+        : aiAssessment.requiresManualReview
+        ? "AI pre-audit marked this product for manual review. Waiting for regulator review."
+        : "AI pre-audit passed. Waiting for regulator review.",
+      aiAssessment,
       product,
     });
   } catch (error) {
@@ -237,6 +1452,8 @@ exports.auditProduct = async (req, res) => {
   try {
     const { productId, reason, decision } = req.body;
     const product = await Product.findByPk(productId);
+    const reviewReason = String(reason || "").trim();
+    const reasonCodes = parseReasonCodes(req.body.reasonCodes);
 
     if (!product) {
       return res.status(404).send({ message: "Product not found" });
@@ -244,29 +1461,73 @@ exports.auditProduct = async (req, res) => {
     if (product.auditStatus !== 0) {
       return res.status(400).send({ message: "Only pending products can be audited" });
     }
+    if (!reviewReason) {
+      return res.status(400).send({ message: "Review reason is required" });
+    }
 
     const requestedDecision = Number(decision);
-    const aiPassed =
-      requestedDecision === 0 ? false : await callAiAuditService(product.description || "", null);
+    if (![0, 1].includes(requestedDecision)) {
+      return res.status(400).send({ message: "Invalid review decision" });
+    }
+    const missingReviewItems =
+      requestedDecision === 1 ? buildElectronicReviewChecklist(product) : [];
+    if (requestedDecision === 1 && missingReviewItems.length > 0) {
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_REVIEW_BLOCKED",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "FAIL",
+        details: {
+          missingItems: missingReviewItems,
+          requestedDecision,
+        },
+        req,
+      });
+
+      return res.status(400).send({
+        message: "Electronic-device review requirements are incomplete",
+        missingItems: missingReviewItems,
+      });
+    }
+    const aiAssessment =
+      requestedDecision === 0
+        ? {
+            label: "FAIL",
+            result: "FAIL",
+            confidence: 0,
+            passProbability: 0,
+            reasonHints: [],
+            modelVersion: null,
+            shouldBlock: true,
+            requiresManualReview: false,
+            isApprovedLike: false,
+          }
+        : await callAiAuditService(product.description || "", null, product);
+    const aiOraclePass = requestedDecision === 1 && aiAssessment.isApprovedLike;
 
     const chainId = product.onChainId > 0 ? product.onChainId : product.id;
-    const { signature, oracleAddress } = signAiAuditResult(chainId, aiPassed);
+    const { signature, oracleAddress } = signAiAuditResult(chainId, aiOraclePass);
     const receipt = await sendContractTransaction({
       account: accounts.regulator,
       method: contract.methods.auditProduct(
         chainId,
-        aiPassed,
-        reason || "Regulator review",
+        aiOraclePass,
+        reviewReason,
         signature
       ),
       gas: 800000,
     });
 
-    product.auditStatus = aiPassed ? 1 : 2;
-    product.auditReason = reason || (aiPassed ? "Approved by regulator review" : "Rejected by regulator review");
+    product.auditStatus = aiOraclePass ? 1 : 2;
+    product.auditReason = reviewReason;
+    product.auditReasonCodes = reasonCodes.length ? JSON.stringify(reasonCodes) : null;
     product.auditBy = req.userId;
     product.auditAt = new Date();
     await product.save();
+
+    const lifecycleTxHashes =
+      product.auditStatus === 1 ? await syncExtendedChainLifecycle(product, accounts.regulator) : {};
 
     await auditService.record({
       operator: req.user,
@@ -275,8 +1536,16 @@ exports.auditProduct = async (req, res) => {
       targetId: product.id,
       result: "SUCCESS",
       details: {
+        requestedDecision,
         auditStatus: product.auditStatus,
+        reason: reviewReason,
+        reasonCodes,
         oracleAddress,
+        aiLabel: aiAssessment.label,
+        aiConfidence: aiAssessment.confidence,
+        aiPassProbability: aiAssessment.passProbability,
+        aiReasonHints: aiAssessment.reasonHints,
+        aiModelVersion: aiAssessment.modelVersion,
       },
       req,
       txHash: receipt.transactionHash,
@@ -286,6 +1555,8 @@ exports.auditProduct = async (req, res) => {
       message: "Audit completed with AI oracle signature.",
       auditStatus: product.auditStatus,
       aiOracleSigner: oracleAddress,
+      aiAssessment,
+      reasonCodes,
     });
   } catch (error) {
     res.status(500).send({ message: error.message });
@@ -295,112 +1566,575 @@ exports.auditProduct = async (req, res) => {
 exports.delistProduct = async (req, res) => {
   try {
     const { productId, reason } = req.body;
-    const product = await Product.findByPk(productId);
+    const result = await withTransaction(async (transaction) => {
+      const product = await findProductForUpdate(productId, transaction);
 
-    if (!product) {
-      return res.status(404).send({ message: "Product not found" });
-    }
+      if (!product) {
+        return { status: 404, body: { message: "Product not found" } };
+      }
 
-    const isRegulator = req.user.role === "admin" || req.user.role === "regulator";
-    const isSellerOwner = req.user.role === "seller" && req.user.id === product.sellerId;
+      const isRegulator = req.user.role === "admin" || req.user.role === "regulator";
+      const isSellerOwner = req.user.role === "seller" && req.user.id === product.sellerId;
 
-    if (!isRegulator && !isSellerOwner) {
-      await auditService.recordAccessDenied(req, ["seller(owner)", "regulator", "admin"]);
-      return res.status(403).send({ message: "No permission to delist this product" });
-    }
+      if (!isRegulator && !isSellerOwner) {
+        await auditService.recordAccessDenied(req, ["seller(owner)", "regulator", "admin"]);
+        return { status: 403, body: { message: "No permission to delist this product" } };
+      }
 
-    const chainId = product.onChainId > 0 ? product.onChainId : product.id;
-    const receipt = await sendContractTransaction({
-      account: isRegulator ? accounts.regulator : accounts.market,
-      method: contract.methods.delistProduct(chainId, reason || "Manual delist"),
-      gas: 600000,
+      const chainId = product.onChainId > 0 ? product.onChainId : product.id;
+      const receipt = await sendContractTransaction({
+        account: isRegulator ? accounts.regulator : accounts.market,
+        method: contract.methods.delistProduct(chainId, reason || "Manual delist"),
+        gas: 600000,
+      });
+
+      product.auditStatus = 2;
+      product.stock = 0;
+      product.delistReason = reason || "Manual delist";
+      product.delistedBy = req.userId;
+      product.delistedAt = new Date();
+      await product.save({ transaction });
+
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_DELISTED",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          reason: product.delistReason,
+          forced: isRegulator,
+        },
+        req,
+        txHash: receipt.transactionHash,
+      });
+
+      return {
+        status: 200,
+        body: { message: "Product delisted successfully" },
+      };
     });
 
-    product.auditStatus = 2;
-    product.stock = 0;
-    product.delistReason = reason || "Manual delist";
-    product.delistedBy = req.userId;
-    product.delistedAt = new Date();
-    await product.save();
-
-    await auditService.record({
-      operator: req.user,
-      action: "PRODUCT_DELISTED",
-      targetType: "PRODUCT",
-      targetId: product.id,
-      result: "SUCCESS",
-      details: {
-        reason: product.delistReason,
-        forced: isRegulator,
-      },
-      req,
-      txHash: receipt.transactionHash,
-    });
-
-    res.send({ message: "Product delisted successfully" });
+    return res.status(result.status).send(result.body);
   } catch (error) {
     res.status(500).send({ message: error.message });
   }
 };
 
-exports.purchaseProduct = async (req, res) => {
+exports.recallProduct = async (req, res) => {
+  let recallJobPayload = null;
   try {
-    const { productId } = req.body;
+    const { productId, reason, batchNo } = req.body;
+    const recallReason = String(reason || "").trim();
+    const normalizedBatchNo = normalizeOptionalString(batchNo, null);
+    if (!recallReason) {
+      return res.status(400).send({ message: "Recall reason is required" });
+    }
 
-    const buyer = await User.findByPk(req.userId);
+    const result = await withTransaction(async (transaction) => {
+      const product = await findProductForUpdate(productId, transaction);
+
+      if (!product) {
+        return { status: 404, body: { message: "Product not found" } };
+      }
+      if (product.recallStatus) {
+        return { status: 400, body: { message: "Product has already been recalled" } };
+      }
+
+      const chainId = product.onChainId > 0 ? product.onChainId : product.id;
+      const recallRiskLevel = 2;
+      const recallNoticeAt = new Date();
+      const delistedAt = new Date();
+      recallJobPayload = {
+        productId: product.id,
+        chainId,
+        reason: recallReason,
+        batchNo: normalizedBatchNo || product.batchNo || null,
+        operatorId: req.userId,
+        recallNoticeAt,
+        delistedAt,
+      };
+      const receipt = await sendContractTransaction({
+        account: accounts.regulator,
+        method: contractSupportsMethod("flagProductRecall", 4)
+          ? contract.methods.flagProductRecall(
+              chainId,
+              recallReason,
+              normalizedBatchNo || product.batchNo || "",
+              recallRiskLevel
+            )
+          : contract.methods.delistProduct(chainId, `Recall: ${recallReason}`),
+        gas: 600000,
+      });
+      recallJobPayload.txHash = receipt.transactionHash;
+
+      product.recallStatus = true;
+      product.recallReason = recallReason;
+      product.recallNoticeAt = recallNoticeAt;
+      product.recallBatchNo = normalizedBatchNo || product.batchNo || null;
+      product.auditStatus = 2;
+      product.stock = 0;
+      product.delistReason = `Recall: ${recallReason}`;
+      product.delistedBy = req.userId;
+      product.delistedAt = delistedAt;
+      await product.save({ transaction });
+
+      const affectedOrders = await Order.findAll({
+        where: { productId: product.id },
+        transaction,
+      });
+      const notificationPayloads = affectedOrders
+        .filter((order) => order.buyerId)
+        .map((order) => ({
+          buyerId: order.buyerId,
+          productId: product.id,
+          orderId: order.id,
+          status: "pending",
+          notifiedAt: recallNoticeAt,
+          viewedAt: null,
+          acknowledgedAt: null,
+        }));
+
+      if (notificationPayloads.length > 0) {
+        await RecallNotification.bulkCreate(notificationPayloads, { transaction });
+      }
+
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_RECALL_FLAGGED",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          reason: recallReason,
+          batchNo: product.recallBatchNo,
+          forcedDelist: true,
+          riskLevel: recallRiskLevel,
+        },
+        req,
+        txHash: receipt.transactionHash,
+      });
+
+      await auditService.record({
+        operator: req.user,
+        action: "RECALL_NOTIFICATIONS_CREATED",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          notificationCount: notificationPayloads.length,
+          affectedOrderCount: affectedOrders.length,
+        },
+        req,
+      });
+
+      return {
+        status: 200,
+        body: {
+          message: "Product recalled successfully",
+          notificationsCreated: notificationPayloads.length,
+          recallStatus: true,
+          txHash: receipt.transactionHash,
+        },
+      };
+    });
+
+    return res.status(result.status).send(result.body);
+  } catch (error) {
+    if (recallJobPayload) {
+      await queueIntegrationJob({
+        jobType: integrationJobService.JOB_TYPE.RECALL_PRODUCT,
+        targetType: "PRODUCT",
+        targetId: recallJobPayload.productId,
+        payload: recallJobPayload,
+        error,
+        req,
+      });
+    }
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.restockProduct = async (req, res) => {
+  try {
+    const { productId, amount } = req.body;
+    const parsedAmount = parseIntegerQuery(amount, 0, { min: 1, max: 1000000 });
+    if (!parsedAmount) {
+      return res.status(400).send({ message: "Invalid restock amount" });
+    }
+    if (typeof contract.methods.restockProduct !== "function") {
+      return res.status(500).send({
+        message: "Contract method restockProduct is unavailable. Please recompile and redeploy contract.",
+      });
+    }
+
+    const result = await withTransaction(async (transaction) => {
+      const product = await findProductForUpdate(productId, transaction);
+
+      if (!product) {
+        return { status: 404, body: { message: "Product not found" } };
+      }
+      if (req.user.role !== "seller" || req.user.id !== product.sellerId) {
+        await auditService.recordAccessDenied(req, ["seller(owner)"]);
+        return { status: 403, body: { message: "No permission to restock this product" } };
+      }
+      if (product.auditStatus !== 1) {
+        return { status: 400, body: { message: "Only approved products can be restocked" } };
+      }
+      if (product.recallStatus) {
+        return { status: 400, body: { message: "Recalled products cannot be restocked" } };
+      }
+
+      const seller = await User.findByPk(product.sellerId);
+      const sellerSync = await syncSellerBlacklist(seller);
+      if (sellerSync.isBlacklisted) {
+        return { status: 403, body: { message: "Your account is blacklisted" } };
+      }
+
+      const chainId = product.onChainId > 0 ? product.onChainId : product.id;
+      const receipt = await sendContractTransaction({
+        account: accounts.market,
+        method: contract.methods.restockProduct(chainId, parsedAmount),
+        gas: 700000,
+      });
+
+      product.stock += parsedAmount;
+      await product.save({ transaction });
+
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_RESTOCKED",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          amount: parsedAmount,
+          newStock: product.stock,
+        },
+        req,
+        txHash: receipt.transactionHash,
+      });
+
+      return {
+        status: 200,
+        body: {
+          message: "Product restocked successfully",
+          stock: product.stock,
+          txHash: receipt.transactionHash,
+        },
+      };
+    });
+
+    return res.status(result.status).send(result.body);
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.resubmitProduct = async (req, res) => {
+  try {
+    const { productId, name, price, description, ipfsHash, qualificationHash, stock } = req.body;
     const product = await Product.findByPk(productId);
 
-    if (!buyer) {
-      return res.status(404).send({ message: "Buyer not found" });
-    }
     if (!product) {
       return res.status(404).send({ message: "Product not found" });
     }
-    if (product.auditStatus !== 1) {
-      return res.status(400).send({ message: "Product is not available for purchase" });
+    if (req.user.role !== "seller" || req.user.id !== product.sellerId) {
+      await auditService.recordAccessDenied(req, ["seller(owner)"]);
+      return res.status(403).send({ message: "No permission to resubmit this product" });
     }
-    if (product.stock <= 0) {
-      return res.status(400).send({ message: "Out of stock" });
+    if (product.auditStatus !== 2) {
+      return res.status(400).send({ message: "Only rejected products can be resubmitted" });
+    }
+    if (product.recallStatus) {
+      return res.status(400).send({ message: "Recalled products cannot be resubmitted" });
     }
 
     const seller = await User.findByPk(product.sellerId);
-    if (seller?.isBlacklisted) {
-      return res.status(400).send({ message: "Seller is blacklisted" });
+    const sellerSync = await syncSellerBlacklist(seller);
+    if (sellerSync.isBlacklisted) {
+      return res.status(403).send({ message: "Your account is blacklisted" });
     }
 
-    const chainId = product.onChainId > 0 ? product.onChainId : product.id;
+    const nextName = String(name || product.name || "").trim();
+    const nextDescription = String(description || product.description || "").trim();
+    const nextPrice = Number(price ?? product.price);
+    const nextStock = parseIntegerQuery(stock, product.stock, { min: 1, max: 1000000 });
+    const nextIpfsHash = ipfsHash !== undefined ? String(ipfsHash || "") : product.ipfsHash;
+    const nextQualificationHash =
+      qualificationHash !== undefined
+        ? String(qualificationHash || "")
+        : product.qualificationHash;
+    const nextElectronicFields = buildElectronicProductFields(req.body, product);
+    const electronicValidationError = validateElectronicFields(nextElectronicFields);
+
+    if (!nextName) {
+      return res.status(400).send({ message: "Product name is required" });
+    }
+    if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
+      return res.status(400).send({ message: "Invalid product price" });
+    }
+    if (!Number.isInteger(nextStock) || nextStock <= 0) {
+      return res.status(400).send({ message: "Invalid stock value" });
+    }
+    if (electronicValidationError) {
+      return res.status(400).send({ message: electronicValidationError });
+    }
+
+    const aiAssessment = await callAiAuditService(nextDescription, null, {
+      name: nextName,
+      description: nextDescription,
+      ...nextElectronicFields,
+    });
+    const degradedToManualReview = isAiServiceUnavailable(aiAssessment);
+    if (aiAssessment.shouldBlock) {
+      product.name = nextName;
+      product.description = nextDescription;
+      product.price = nextPrice;
+      product.stock = nextStock;
+      product.ipfsHash = nextIpfsHash;
+      product.qualificationHash = nextQualificationHash;
+      Object.assign(product, nextElectronicFields);
+      product.auditStatus = 2;
+      product.auditReason = "AI pre-audit marked this resubmission as FAIL.";
+      await product.save();
+
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_RESUBMISSION_AI_REJECTED",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          name: nextName,
+          aiLabel: aiAssessment.label,
+          aiConfidence: aiAssessment.confidence,
+          aiPassProbability: aiAssessment.passProbability,
+          aiReasonHints: aiAssessment.reasonHints,
+          aiModelVersion: aiAssessment.modelVersion,
+        },
+        req,
+      });
+
+      return res.status(400).send({
+        message: "AI pre-audit marked this resubmission as FAIL.",
+        aiAssessment,
+        product,
+      });
+    }
+
     const receipt = await sendContractTransaction({
       account: accounts.market,
-      method: contract.methods.purchaseProduct(chainId, buyer.ethAddress),
-      gas: 1200000,
+      method: buildCreateProductMethod(
+        {
+          name: nextName,
+          price: nextPrice,
+          ipfsHash: nextIpfsHash,
+          qualificationHash: nextQualificationHash,
+          stock: nextStock,
+          ...nextElectronicFields,
+        },
+        seller.ethAddress
+      ),
+      gas: 2000000,
     });
 
-    const chainOrderId = parseInt(await contract.methods.orderCount().call(), 10);
+    const chainProductId = parseInt(await contract.methods.productCount().call(), 10);
 
-    await Order.create({
-      productId: product.id,
-      buyerId: buyer.id,
-      price: product.price,
-      status: 0,
-      onChainId: chainOrderId,
-    });
-
-    product.stock = product.stock - 1;
+    product.name = nextName;
+    product.description = nextDescription;
+    product.price = nextPrice;
+    product.stock = nextStock;
+    product.ipfsHash = nextIpfsHash;
+    product.qualificationHash = nextQualificationHash;
+    Object.assign(product, nextElectronicFields);
+    product.auditStatus = 0;
+    product.auditReason = degradedToManualReview
+      ? "AI service unavailable. Routed to manual review."
+      : "Product resubmitted. Waiting for regulator review.";
+    product.auditBy = null;
+    product.auditAt = null;
+    product.delistReason = null;
+    product.delistedBy = null;
+    product.delistedAt = null;
+    product.txHash = receipt.transactionHash;
+    product.onChainId = chainProductId;
     await product.save();
+
+    const lifecycleTxHashes = await syncExtendedChainLifecycle(product, accounts.regulator);
 
     await auditService.record({
       operator: req.user,
-      action: "PRODUCT_PURCHASED",
+      action: "PRODUCT_RESUBMITTED",
       targetType: "PRODUCT",
       targetId: product.id,
       result: "SUCCESS",
-      details: { chainOrderId },
+      details: {
+        chainProductId,
+        aiLabel: aiAssessment.label,
+        aiConfidence: aiAssessment.confidence,
+        aiPassProbability: aiAssessment.passProbability,
+        aiReasonHints: aiAssessment.reasonHints,
+        aiModelVersion: aiAssessment.modelVersion,
+      },
       req,
       txHash: receipt.transactionHash,
     });
 
-    res.send({ message: "Purchase successful" });
+    if (degradedToManualReview) {
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_AI_DEGRADED_TO_MANUAL_REVIEW",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          source: "resubmit",
+          name: nextName,
+          reason: "AI service unavailable",
+        },
+        req,
+      });
+    }
+
+    await recordLifecycleAuditEntries({
+      product,
+      operator: req.user,
+      req,
+      txHashes: lifecycleTxHashes,
+    });
+
+    return res.send({
+      message: degradedToManualReview
+        ? "AI pre-audit is temporarily unavailable. Routed this resubmission to manual review."
+        : aiAssessment.requiresManualReview
+        ? "AI pre-audit marked this resubmission for manual review. Waiting for regulator review."
+        : "Product resubmitted successfully. Waiting for regulator review.",
+      aiAssessment,
+      product,
+    });
   } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.purchaseProduct = async (req, res) => {
+  let purchaseJobPayload = null;
+  try {
+    const { productId } = req.body;
+
+    const buyer = await User.findByPk(req.userId);
+
+    if (!buyer) {
+      return res.status(404).send({ message: "Buyer not found" });
+    }
+
+    const result = await withTransaction(async (transaction) => {
+      const product = await findProductForUpdate(productId, transaction);
+
+      if (!product) {
+        return { status: 404, body: { message: "Product not found" } };
+      }
+      if (product.auditStatus !== 1) {
+        return { status: 400, body: { message: "Product is not available for purchase" } };
+      }
+      if (product.recallStatus) {
+        return { status: 400, body: { message: "Recalled products cannot be purchased" } };
+      }
+      if (product.stock <= 0) {
+        return { status: 400, body: { message: "Out of stock" } };
+      }
+
+      const seller = await User.findByPk(product.sellerId);
+      const sellerSync = await syncSellerBlacklist(seller);
+      if (sellerSync.isBlacklisted) {
+        return { status: 400, body: { message: "Seller is blacklisted" } };
+      }
+
+      const chainId = product.onChainId > 0 ? product.onChainId : product.id;
+      purchaseJobPayload = {
+        productId: product.id,
+        buyerId: buyer.id,
+        price: product.price,
+        paidAt: new Date(),
+      };
+      const receipt = await sendContractTransaction({
+        account: accounts.market,
+        method: contract.methods.purchaseProduct(chainId, buyer.ethAddress),
+        gas: 1200000,
+      });
+
+      const chainOrderId = parseInt(await contract.methods.orderCount().call(), 10);
+      purchaseJobPayload.txHash = receipt.transactionHash;
+      purchaseJobPayload.chainOrderId = chainOrderId;
+
+      const order = await Order.create(
+        {
+          productId: product.id,
+          buyerId: buyer.id,
+          price: product.price,
+          status: 0,
+          paymentStatus: "paid",
+          paymentMethod: "platform_simulated",
+          paymentReference: `CHAIN_ORDER_${chainOrderId}`,
+          paidAt: purchaseJobPayload.paidAt,
+          refundStatus: "none",
+          refundAmount: 0,
+          refundedAt: null,
+          shippingStatus: "pending",
+          onChainId: chainOrderId,
+        },
+        { transaction }
+      );
+
+      product.stock = product.stock - 1;
+      await product.save({ transaction });
+
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_PURCHASED",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: { chainOrderId },
+        req,
+        txHash: receipt.transactionHash,
+      });
+
+      await auditService.record({
+        operator: req.user,
+        action: "ORDER_PAYMENT_RECORDED",
+        targetType: "ORDER",
+        targetId: order.id,
+        result: "SUCCESS",
+        details: {
+          paymentStatus: order.paymentStatus,
+          paymentMethod: order.paymentMethod,
+          paymentReference: order.paymentReference,
+          paidAt: purchaseJobPayload.paidAt,
+        },
+        req,
+        txHash: receipt.transactionHash,
+      });
+
+      return {
+        status: 200,
+        body: { message: "Purchase successful" },
+      };
+    });
+
+    return res.status(result.status).send(result.body);
+  } catch (error) {
+    if (purchaseJobPayload) {
+      await queueIntegrationJob({
+        jobType: integrationJobService.JOB_TYPE.PURCHASE_PRODUCT,
+        targetType: "ORDER",
+        targetId: purchaseJobPayload.chainOrderId || purchaseJobPayload.productId,
+        payload: purchaseJobPayload,
+        error,
+        req,
+      });
+    }
     console.error(error);
     res.status(500).send({ message: "Purchase failed: " + error.message });
   }
@@ -418,7 +2152,16 @@ exports.getMyOrders = async (req, res) => {
           {
             model: Product,
             as: "product",
-            include: [{ model: User, as: "seller", attributes: ["username"] }],
+            include: [{ model: User, as: "seller", attributes: ["id", "username", "ethAddress"] }],
+          },
+          {
+            model: AfterSalesRecord,
+            as: "afterSalesRecords",
+            include: [{ model: User, as: "creator", attributes: ["id", "username", "role"] }],
+          },
+          {
+            model: RecallNotification,
+            as: "recallNotifications",
           },
         ],
         order: [["createdAt", "DESC"]],
@@ -434,7 +2177,12 @@ exports.getMyOrders = async (req, res) => {
           {
             model: User,
             as: "buyer",
-            attributes: ["username"],
+            attributes: ["id", "username", "ethAddress"],
+          },
+          {
+            model: AfterSalesRecord,
+            as: "afterSalesRecords",
+            include: [{ model: User, as: "creator", attributes: ["id", "username", "role"] }],
           },
         ],
         order: [["createdAt", "DESC"]],
@@ -444,6 +2192,330 @@ exports.getMyOrders = async (req, res) => {
     res.send(orders);
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+};
+
+exports.getRecallNotifications = async (req, res) => {
+  try {
+    const where = {};
+
+    if (req.user.role === "buyer") {
+      where.buyerId = req.userId;
+    } else if (req.query.buyerId) {
+      where.buyerId = parseInt(req.query.buyerId, 10);
+    }
+
+    if (req.query.productId) {
+      where.productId = parseInt(req.query.productId, 10);
+    }
+
+    const notifications = await RecallNotification.findAll({
+      where,
+      include: [
+        {
+          model: Product,
+          as: "product",
+        },
+        {
+          model: Order,
+          as: "order",
+        },
+        ...(req.user.role === "regulator" || req.user.role === "admin"
+          ? [
+              {
+                model: User,
+                as: "buyer",
+                attributes: ["id", "username", "ethAddress"],
+              },
+            ]
+          : []),
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    return res.send(
+      notifications.map((notification) => ({
+        ...serializeRecallNotification(notification),
+        buyer:
+          notification.buyer && (req.user.role === "regulator" || req.user.role === "admin")
+            ? {
+                id: notification.buyer.id,
+                username: notification.buyer.username,
+                ethAddress: notification.buyer.ethAddress,
+              }
+            : undefined,
+      }))
+    );
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.updateRecallNotificationStatus = async (req, res) => {
+  try {
+    const notification = await RecallNotification.findByPk(req.params.notificationId, {
+      include: [
+        {
+          model: Product,
+          as: "product",
+        },
+        {
+          model: Order,
+          as: "order",
+        },
+      ],
+    });
+
+    if (!notification) {
+      return res.status(404).send({ message: "Recall notification not found" });
+    }
+    if (req.user.role === "buyer" && notification.buyerId !== req.userId) {
+      await auditService.recordAccessDenied(req, ["buyer(owner)", "regulator", "admin"]);
+      return res.status(403).send({ message: "You can only update your own recall notification" });
+    }
+
+    const nextStatus = normalizeOptionalString(req.body.status, "acknowledged");
+    if (!RECALL_NOTIFICATION_STATUSES.has(nextStatus) || nextStatus === "pending") {
+      return res.status(400).send({ message: "Unsupported recall notification status" });
+    }
+
+    if (!notification.viewedAt) {
+      notification.viewedAt = new Date();
+    }
+    if (nextStatus === "acknowledged") {
+      notification.acknowledgedAt = new Date();
+    }
+    notification.status = nextStatus;
+    await notification.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "RECALL_NOTIFICATION_UPDATED",
+      targetType: "RECALL_NOTIFICATION",
+      targetId: notification.id,
+      result: "SUCCESS",
+      details: {
+        status: notification.status,
+        orderId: notification.orderId,
+        productId: notification.productId,
+      },
+      req,
+    });
+
+    return res.send({
+      message: "Recall notification updated successfully",
+      notification: serializeRecallNotification(notification),
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.getRecallNotificationSummary = async (req, res) => {
+  try {
+    const where = {};
+    if (req.query.productId) {
+      where.productId = parseInt(req.query.productId, 10);
+    }
+
+    const [total, pending, viewed, acknowledged, closed] = await Promise.all([
+      RecallNotification.count({ where }),
+      RecallNotification.count({ where: { ...where, status: "pending" } }),
+      RecallNotification.count({ where: { ...where, status: "viewed" } }),
+      RecallNotification.count({ where: { ...where, status: "acknowledged" } }),
+      RecallNotification.count({ where: { ...where, status: "closed" } }),
+    ]);
+
+    return res.send({
+      total,
+      pending,
+      viewed,
+      acknowledged,
+      closed,
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.recordAfterSales = async (req, res) => {
+  try {
+    const { orderId, componentName, description, serviceResult, evidenceIpfsHash } = req.body;
+    const type = normalizeAfterSalesType(req.body.type, null);
+    const order = await Order.findByPk(orderId, {
+      include: [
+        {
+          model: Product,
+          as: "product",
+        },
+      ],
+    });
+
+    if (!order || !order.product) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (!type) {
+      return res.status(400).send({ message: "After-sales type is required" });
+    }
+
+    const normalizedDescription = String(description || "").trim();
+    if (!normalizedDescription) {
+      return res.status(400).send({ message: "After-sales description is required" });
+    }
+
+    if (
+      req.user.role === "seller" &&
+      req.user.id !== order.product.sellerId
+    ) {
+      await auditService.recordAccessDenied(req, ["seller(owner)", "regulator", "admin"]);
+      return res.status(403).send({ message: "You can only record service for your own orders" });
+    }
+
+    const record = await AfterSalesRecord.create({
+      orderId: order.id,
+      productId: order.productId,
+      type,
+      componentName: normalizeOptionalString(componentName, null),
+      description: normalizedDescription,
+      serviceResult: normalizeOptionalString(serviceResult, null),
+      createdBy: req.userId,
+      evidenceIpfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+    });
+
+    let txHash = null;
+    if (
+      ["repair", "component_replacement", "warranty_claim"].includes(type) &&
+      contractSupportsMethod("recordProductRepair", 3)
+    ) {
+      const chainId = order.product.onChainId > 0 ? order.product.onChainId : order.product.id;
+      const receipt = await sendContractTransaction({
+        account: accounts.market,
+        method: contract.methods.recordProductRepair(
+          chainId,
+          normalizeOptionalString(componentName, type) || type,
+          normalizedDescription
+        ),
+        gas: 650000,
+      });
+      txHash = receipt.transactionHash;
+    }
+
+    await auditService.record({
+      operator: req.user,
+      action: type === "warranty_claim" ? "WARRANTY_UPDATED" : "PRODUCT_REPAIR_RECORDED",
+      targetType: "PRODUCT",
+      targetId: order.productId,
+      result: "SUCCESS",
+      details: {
+        orderId: order.id,
+        type,
+        componentName: normalizeOptionalString(componentName, null),
+        serviceResult: normalizeOptionalString(serviceResult, null),
+        evidenceIpfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+      },
+      req,
+      txHash,
+      ipfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+    });
+
+    const savedRecord = await AfterSalesRecord.findByPk(record.id, {
+      include: [
+        {
+          model: User,
+          as: "creator",
+          attributes: ["id", "username", "role"],
+        },
+      ],
+    });
+
+    return res.send({
+      message: "After-sales record saved successfully",
+      record: serializeAfterSalesRecord(savedRecord || record),
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.getProductAfterSales = async (req, res) => {
+  try {
+    const product = await Product.findByPk(req.params.productId);
+    if (!product) {
+      return res.status(404).send({ message: "Product not found" });
+    }
+
+    const records = await AfterSalesRecord.findAll({
+      where: { productId: product.id },
+      include: [
+        {
+          model: User,
+          as: "creator",
+          attributes: ["id", "username", "role"],
+        },
+      ],
+      order: [["createdAt", "ASC"]],
+    });
+
+    return res.send(records.map((record) => serializeAfterSalesRecord(record)));
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.shipOrder = async (req, res) => {
+  try {
+    const { orderId, trackingNumber, shippingCarrier } = req.body;
+    const order = await Order.findByPk(orderId, {
+      include: [
+        {
+          model: Product,
+          as: "product",
+        },
+      ],
+    });
+
+    if (!order || !order.product) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (req.user.role !== "seller" || req.user.id !== order.product.sellerId) {
+      await auditService.recordAccessDenied(req, ["seller(owner)"]);
+      return res.status(403).send({ message: "You can only ship your own order" });
+    }
+    if (order.status !== 0) {
+      return res.status(400).send({ message: "Only active orders can be shipped" });
+    }
+    if (order.shippingStatus === "shipped" || order.shippingStatus === "delivered") {
+      return res.status(400).send({ message: "This order has already been shipped" });
+    }
+
+    const normalizedTrackingNumber = String(trackingNumber || "").trim();
+    const normalizedCarrier = String(shippingCarrier || "").trim();
+    if (!normalizedTrackingNumber) {
+      return res.status(400).send({ message: "Tracking number is required" });
+    }
+
+    order.shippingStatus = "shipped";
+    order.trackingNumber = normalizedTrackingNumber;
+    order.shippingCarrier = normalizedCarrier || null;
+    order.shippedAt = new Date();
+    await order.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "ORDER_SHIPPED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      details: {
+        trackingNumber: normalizedTrackingNumber,
+        shippingCarrier: normalizedCarrier || null,
+      },
+      req,
+    });
+
+    return res.send({ message: "Order shipped successfully" });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
   }
 };
 
@@ -463,6 +2535,9 @@ exports.confirmReceipt = async (req, res) => {
     if (order.status !== 0) {
       return res.status(400).send({ message: "Only locked orders can be confirmed" });
     }
+    if (order.shippingStatus === "pending") {
+      return res.status(400).send({ message: "Seller has not shipped this order yet" });
+    }
 
     const receipt = await sendContractTransaction({
       account: accounts.market,
@@ -471,6 +2546,8 @@ exports.confirmReceipt = async (req, res) => {
     });
 
     order.status = 1;
+    order.shippingStatus = "delivered";
+    order.buyerConfirmedAt = new Date();
     await order.save();
 
     await auditService.record({
@@ -544,6 +2621,7 @@ exports.raiseComplaint = async (req, res) => {
     const { orderId, reason, evidenceIpfsHash } = req.body;
     const order = await Order.findByPk(orderId);
     const buyer = await User.findByPk(req.userId);
+    const complaintType = normalizeComplaintType(req.body.complaintType, null);
 
     if (!order || !buyer) {
       return res.status(404).send({ message: "Order not found" });
@@ -555,10 +2633,13 @@ exports.raiseComplaint = async (req, res) => {
     if (order.status !== 0) {
       return res.status(400).send({ message: "Only locked orders can enter complaint flow" });
     }
+    if (!complaintType) {
+      return res.status(400).send({ message: "Complaint type is required" });
+    }
 
     const complaintText = evidenceIpfsHash
-      ? `${reason} (Evidence: ipfs://${evidenceIpfsHash})`
-      : reason;
+      ? `[${complaintType}] ${reason} (Evidence: ipfs://${evidenceIpfsHash})`
+      : `[${complaintType}] ${reason}`;
 
     const receipt = await sendContractTransaction({
       account: accounts.market,
@@ -571,8 +2652,13 @@ exports.raiseComplaint = async (req, res) => {
     });
 
     order.status = 3;
+    order.complaintType = complaintType;
     order.complaintReason = reason;
     order.evidenceIpfsHash = evidenceIpfsHash || null;
+    order.refundStatus = "pending_review";
+    order.sellerResponse = null;
+    order.sellerEvidenceIpfsHash = null;
+    order.sellerRespondedAt = null;
     await order.save();
 
     await auditService.record({
@@ -581,7 +2667,10 @@ exports.raiseComplaint = async (req, res) => {
       targetType: "ORDER",
       targetId: order.id,
       result: "SUCCESS",
-      details: { evidenceIpfsHash: evidenceIpfsHash || null },
+      details: {
+        complaintType,
+        evidenceIpfsHash: evidenceIpfsHash || null,
+      },
       req,
       txHash: receipt.transactionHash,
       ipfsHash: evidenceIpfsHash || null,
@@ -590,6 +2679,58 @@ exports.raiseComplaint = async (req, res) => {
     res.send({ message: "Complaint submitted" });
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+};
+
+exports.respondToComplaint = async (req, res) => {
+  try {
+    const { orderId, response, evidenceIpfsHash } = req.body;
+    const order = await Order.findByPk(orderId, {
+      include: [
+        {
+          model: Product,
+          as: "product",
+        },
+      ],
+    });
+
+    if (!order || !order.product) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (req.user.role !== "seller" || req.user.id !== order.product.sellerId) {
+      await auditService.recordAccessDenied(req, ["seller(owner)"]);
+      return res.status(403).send({ message: "You can only respond to complaints on your own orders" });
+    }
+    if (order.status !== 3) {
+      return res.status(400).send({ message: "Only disputed orders can accept seller response" });
+    }
+
+    const sellerResponse = String(response || "").trim();
+    if (!sellerResponse) {
+      return res.status(400).send({ message: "Seller response is required" });
+    }
+
+    order.sellerResponse = sellerResponse;
+    order.sellerEvidenceIpfsHash = evidenceIpfsHash || null;
+    order.sellerRespondedAt = new Date();
+    await order.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "SELLER_RESPONSE_SUBMITTED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      details: {
+        evidenceIpfsHash: evidenceIpfsHash || null,
+      },
+      req,
+      ipfsHash: evidenceIpfsHash || null,
+    });
+
+    return res.send({ message: "Seller response submitted successfully" });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
   }
 };
 
@@ -604,6 +2745,10 @@ exports.resolveComplaint = async (req, res) => {
     if (order.status !== 3) {
       return res.status(400).send({ message: "Only disputed orders can be resolved" });
     }
+
+    const product = await Product.findByPk(order.productId);
+    const seller = product ? await User.findByPk(product.sellerId) : null;
+    const sellerRiskBefore = seller ? await syncSellerBlacklist(seller) : null;
 
     const receipt = await sendContractTransaction({
       account: accounts.regulator,
@@ -620,6 +2765,10 @@ exports.resolveComplaint = async (req, res) => {
     order.resolvedAt = new Date();
     order.rulingForBuyer = Boolean(rulingForBuyer);
     order.rulingDetails = rulingDetails || "";
+    order.paymentStatus = rulingForBuyer ? "refunded" : order.paymentStatus || "paid";
+    order.refundStatus = rulingForBuyer ? "refunded" : "rejected";
+    order.refundAmount = rulingForBuyer ? order.price : 0;
+    order.refundedAt = rulingForBuyer ? new Date() : null;
     await order.save();
 
     await auditService.record({
@@ -636,9 +2785,81 @@ exports.resolveComplaint = async (req, res) => {
       txHash: receipt.transactionHash,
     });
 
+    if (Boolean(rulingForBuyer)) {
+      await auditService.record({
+        operator: req.user,
+        action: "ORDER_REFUND_COMPLETED",
+        targetType: "ORDER",
+        targetId: order.id,
+        result: "SUCCESS",
+        details: {
+          refundStatus: order.refundStatus,
+          refundAmount: order.refundAmount,
+          refundedAt: order.refundedAt,
+        },
+        req,
+        txHash: receipt.transactionHash,
+      });
+    }
+
+    if (seller) {
+      const sellerRiskAfter = await syncSellerBlacklist(seller);
+      if (sellerRiskBefore && !sellerRiskBefore.isBlacklisted && sellerRiskAfter.isBlacklisted) {
+        await auditService.record({
+          operator: req.user,
+          action: "SELLER_BLACKLISTED",
+          targetType: "USER",
+          targetId: seller.id,
+          result: "SUCCESS",
+          details: {
+            reason: "Reputation below zero after complaint resolution",
+            orderId: order.id,
+          },
+          req,
+          txHash: receipt.transactionHash,
+        });
+      }
+    }
+
     res.send({ message: "Complaint resolved" });
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+};
+
+exports.getIntegrationJobs = async (req, res) => {
+  try {
+    const jobs = await integrationJobService.listJobs({
+      status: normalizeOptionalString(req.query.status, null),
+      jobType: normalizeOptionalString(req.query.jobType, null),
+      activeOnly: parseBooleanQuery(req.query.activeOnly) === true,
+      limit: req.query.limit,
+    });
+
+    return res.send(jobs);
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.retryIntegrationJob = async (req, res) => {
+  try {
+    const job = await db.integrationJob.findByPk(req.params.jobId);
+    if (!job) {
+      return res.status(404).send({ message: "Integration job not found" });
+    }
+
+    const retriedJob = await integrationJobService.retryJob(job, {
+      operator: req.user,
+      req,
+    });
+
+    return res.send({
+      message: "Integration job retried successfully",
+      job: retriedJob,
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
   }
 };
 
@@ -655,7 +2876,7 @@ exports.getAllComplaints = async (req, res) => {
         {
           model: User,
           as: "buyer",
-          attributes: ["username", "id"],
+          attributes: ["username", "id", "ethAddress"],
         },
       ],
       order: [["updatedAt", "DESC"]],
@@ -663,8 +2884,9 @@ exports.getAllComplaints = async (req, res) => {
 
     for (const complaint of complaints) {
       try {
-        const sellerData = await contract.methods.sellers(complaint.product.seller.ethAddress).call();
-        complaint.product.seller.dataValues.score = parseInt(sellerData.reputationScore, 10);
+        const sellerSync = await syncSellerBlacklist(complaint.product.seller);
+        complaint.product.seller.dataValues.score = sellerSync.reputationScore;
+        complaint.product.seller.dataValues.isBlacklisted = sellerSync.isBlacklisted;
       } catch (error) {
         complaint.product.seller.dataValues.score = 60;
       }

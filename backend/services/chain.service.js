@@ -26,7 +26,15 @@ try {
 
 const GANACHE_URL = process.env.GANACHE_URL || "http://127.0.0.1:7545";
 const CONTRACT_ADDRESS =
-  process.env.CONTRACT_ADDRESS || getArtifactContractAddress() || "0x563853589af3A2433348b8E20D8547b14C6a8088";
+  process.env.CONTRACT_ADDRESS || getArtifactContractAddress();
+const DEV_ONLY_AI_ORACLE_PRIVATE_KEY =
+  "0x1111111111111111111111111111111111111111111111111111111111111111";
+
+if (!CONTRACT_ADDRESS) {
+  throw new Error(
+    "Missing contract address. Set CONTRACT_ADDRESS or deploy contract to generate artifact network address."
+  );
+}
 
 const DEFAULT_KEYS = {
   admin:
@@ -36,8 +44,7 @@ const DEFAULT_KEYS = {
   market:
     process.env.CHAIN_MARKET_PRIVATE_KEY || null,
   aiOracle:
-    process.env.AI_ORACLE_PRIVATE_KEY ||
-    "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce036f4f5f9e5d7b8c6a7d1",
+    process.env.AI_ORACLE_PRIVATE_KEY || DEV_ONLY_AI_ORACLE_PRIVATE_KEY,
 };
 
 const web3 = new Web3(GANACHE_URL);

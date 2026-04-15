@@ -12,6 +12,13 @@ contract ProductRegulation {
         bool isAudited;
         bool isDelisted;
         address seller;
+        string brand;
+        string model;
+        string category;
+        string deviceIdHash;
+        string cccNumberHash;
+        uint8 riskLevel;
+        bool recallFlag;
         bool exists;
     }
 
@@ -58,6 +65,25 @@ contract ProductRegulation {
     event ProductCreated(uint256 id, string name, uint256 stock, address seller);
     event ProductAudited(uint256 id, bool pass, string reason);
     event ProductDelisted(uint256 id, address operator, string reason);
+    event ProductRestocked(uint256 id, uint256 amount, uint256 latestStock);
+    event ProductComplianceUpdated(
+        uint256 indexed id,
+        string category,
+        string cccNumberHash,
+        uint8 riskLevel
+    );
+    event ProductRecallFlagged(
+        uint256 indexed id,
+        string reason,
+        string batchNo,
+        uint8 riskLevel
+    );
+    event ProductRepairRecorded(
+        uint256 indexed id,
+        string componentName,
+        string description
+    );
+    event ProductRefurbishDeclared(uint256 indexed id, uint8 riskLevel, string notes);
 
     event OrderCreated(uint256 orderId, uint256 productId, address buyer);
     event OrderConfirmed(uint256 orderId, address buyer);
@@ -68,6 +94,7 @@ contract ProductRegulation {
 
     event SellerRegistered(uint256 id, address seller, int256 score);
     event SellerBlacklisted(address seller, string reason);
+    event SellerRestored(address seller, int256 score, string reason);
     event RegulatorOperatorUpdated(address operator);
     event MarketOperatorUpdated(address operator);
     event AiOracleUpdated(address signer);
@@ -137,34 +164,64 @@ contract ProductRegulation {
         emit SellerRegistered(sellerCount, sellerWallet, 60);
     }
 
+    function restoreSeller(
+        address sellerWallet,
+        int256 restoredScore,
+        string memory reason
+    ) public onlyRegulatorOperator {
+        require(sellerWallet != address(0), "Invalid seller");
+        require(sellers[sellerWallet].isRegistered, "Seller not registered");
+        require(sellers[sellerWallet].isBlacklisted, "Seller is not blacklisted");
+        require(restoredScore >= 0, "Score must be >= 0");
+
+        sellers[sellerWallet].isBlacklisted = false;
+        sellers[sellerWallet].reputationScore = restoredScore;
+
+        emit SellerRestored(sellerWallet, restoredScore, reason);
+    }
+
     function createProduct(
         string memory _name,
         uint256 _price,
         string memory _ipfsHash,
         string memory _qualificationHash,
         uint256 _stock,
-        address sellerWallet
+        address sellerWallet,
+        string memory _brand,
+        string memory _model,
+        string memory _category,
+        string memory _deviceIdHash,
+        string memory _cccNumberHash,
+        uint8 _riskLevel
     ) public onlyMarketOperator {
         require(sellers[sellerWallet].isRegistered, "Only registered sellers");
         require(!sellers[sellerWallet].isBlacklisted, "Seller is blacklisted");
         require(_price > 0, "Price > 0");
         require(_stock > 0, "Stock > 0");
+        require(_riskLevel <= 2, "Risk level invalid");
 
         productCount++;
-        products[productCount] = Product(
-            productCount,
-            _name,
-            _price,
-            _ipfsHash,
-            _qualificationHash,
-            _stock,
-            false,
-            false,
-            sellerWallet,
-            true
-        );
+        Product storage p = products[productCount];
+        p.id = productCount;
+        p.name = _name;
+        p.price = _price;
+        p.ipfsHash = _ipfsHash;
+        p.qualificationHash = _qualificationHash;
+        p.stock = _stock;
+        p.isAudited = false;
+        p.isDelisted = false;
+        p.seller = sellerWallet;
+        p.brand = _brand;
+        p.model = _model;
+        p.category = _category;
+        p.deviceIdHash = _deviceIdHash;
+        p.cccNumberHash = _cccNumberHash;
+        p.riskLevel = _riskLevel;
+        p.recallFlag = false;
+        p.exists = true;
 
         emit ProductCreated(productCount, _name, _stock, sellerWallet);
+        emit ProductComplianceUpdated(productCount, _category, _cccNumberHash, _riskLevel);
     }
 
     function auditProduct(
@@ -182,6 +239,24 @@ contract ProductRegulation {
         emit ProductAudited(_id, _pass, _reason);
     }
 
+    function updateProductCompliance(
+        uint256 _id,
+        string memory _category,
+        string memory _cccNumberHash,
+        uint8 _riskLevel
+    ) public onlyRegulatorOperator {
+        require(_id > 0 && _id <= productCount, "Invalid ID");
+        require(products[_id].exists, "Product not found");
+        require(_riskLevel <= 2, "Risk level invalid");
+
+        Product storage p = products[_id];
+        p.category = _category;
+        p.cccNumberHash = _cccNumberHash;
+        p.riskLevel = _riskLevel;
+
+        emit ProductComplianceUpdated(_id, _category, _cccNumberHash, _riskLevel);
+    }
+
     function delistProduct(uint256 _id, string memory _reason) public onlyPlatformOperator {
         require(_id > 0 && _id <= productCount, "Invalid ID");
         Product storage p = products[_id];
@@ -194,6 +269,69 @@ contract ProductRegulation {
         emit ProductDelisted(_id, msg.sender, _reason);
     }
 
+    function flagProductRecall(
+        uint256 _id,
+        string memory _reason,
+        string memory _batchNo,
+        uint8 _riskLevel
+    ) public onlyRegulatorOperator {
+        require(_id > 0 && _id <= productCount, "Invalid ID");
+        require(_riskLevel <= 2, "Risk level invalid");
+
+        Product storage p = products[_id];
+        require(p.exists, "Product not found");
+
+        p.isAudited = false;
+        p.isDelisted = true;
+        p.stock = 0;
+        p.recallFlag = true;
+        p.riskLevel = _riskLevel;
+
+        emit ProductRecallFlagged(_id, _reason, _batchNo, _riskLevel);
+        emit ProductDelisted(_id, msg.sender, _reason);
+    }
+
+    function recordProductRepair(
+        uint256 _id,
+        string memory _componentName,
+        string memory _description
+    ) public onlyPlatformOperator {
+        require(_id > 0 && _id <= productCount, "Invalid ID");
+        require(products[_id].exists, "Product not found");
+
+        emit ProductRepairRecorded(_id, _componentName, _description);
+    }
+
+    function declareProductRefurbish(
+        uint256 _id,
+        uint8 _riskLevel,
+        string memory _notes
+    ) public onlyPlatformOperator {
+        require(_id > 0 && _id <= productCount, "Invalid ID");
+        require(products[_id].exists, "Product not found");
+        require(_riskLevel <= 2, "Risk level invalid");
+
+        Product storage p = products[_id];
+        if (_riskLevel > p.riskLevel) {
+            p.riskLevel = _riskLevel;
+        }
+
+        emit ProductRefurbishDeclared(_id, p.riskLevel, _notes);
+    }
+
+    function restockProduct(uint256 _id, uint256 _amount) public onlyMarketOperator {
+        require(_id > 0 && _id <= productCount, "Invalid ID");
+        require(_amount > 0, "Amount > 0");
+
+        Product storage p = products[_id];
+        require(p.exists, "Product not found");
+        require(!p.isDelisted, "Product delisted");
+        require(!p.recallFlag, "Product recalled");
+
+        p.stock = p.stock + _amount;
+        emit ProductRestocked(_id, _amount, p.stock);
+    }
+
     function purchaseProduct(
         uint256 _productId,
         address buyerWallet
@@ -203,6 +341,7 @@ contract ProductRegulation {
         require(buyerWallet != address(0), "Invalid buyer");
         require(p.exists, "Product not found");
         require(!p.isDelisted, "Product delisted");
+        require(!p.recallFlag, "Product recalled");
         require(p.isAudited, "Product not audited");
         require(p.stock > 0, "Out of stock");
         require(p.seller != buyerWallet, "Seller cannot buy own");
@@ -331,7 +470,7 @@ contract ProductRegulation {
         bytes memory sig
     ) internal pure returns (bytes32 r, bytes32 s, uint8 v) {
         require(sig.length == 65, "Invalid signature length");
-        assembly {
+        assembly ("memory-safe") {
             r := mload(add(sig, 32))
             s := mload(add(sig, 64))
             v := byte(0, mload(add(sig, 96)))

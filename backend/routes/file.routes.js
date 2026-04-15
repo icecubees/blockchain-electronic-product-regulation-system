@@ -25,6 +25,24 @@ router.post(
   controller.uploadComplaintEvidence
 );
 
+router.post(
+  "/seller-complaint-evidence",
+  [verifyToken, requireRoles("seller"), upload.single("file")],
+  controller.uploadSellerComplaintEvidence
+);
+
+router.post(
+  "/after-sales-evidence",
+  [verifyToken, requireRoles("seller", "regulator", "admin"), upload.single("file")],
+  controller.uploadAfterSalesEvidence
+);
+
+router.post(
+  "/public/seller-qualification",
+  [upload.single("file")],
+  controller.uploadPublicSellerQualification
+);
+
 module.exports = (app) => {
   app.use("/api/files", router);
 };

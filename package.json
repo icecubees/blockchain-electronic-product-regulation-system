@@ -1,4 +1,10 @@
 {
+  "scripts": {
+    "test": "npm run test:backend && npm run test:frontend && npm run test:blockchain",
+    "test:backend": "npm --prefix backend test",
+    "test:frontend": "npm --prefix frontend test",
+    "test:blockchain": "cd blockchain && truffle test .\\test\\product_regulation.test.js --config .\\truffle-config.js --network development"
+  },
   "dependencies": {
     "truffle": "^5.11.5"
   }

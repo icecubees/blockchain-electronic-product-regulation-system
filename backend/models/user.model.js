@@ -5,6 +5,11 @@ module.exports = (sequelize, Sequelize) => {
     role: { type: Sequelize.STRING, allowNull: false },
     status: { type: Sequelize.INTEGER, defaultValue: 1 },
     ethAddress: { type: Sequelize.STRING },
+    qualificationType: { type: Sequelize.STRING },
+    brandAuthorizationHash: { type: Sequelize.STRING },
+    repairQualificationHash: { type: Sequelize.STRING },
+    usedDeviceQualificationHash: { type: Sequelize.STRING },
+    qualificationNotes: { type: Sequelize.TEXT("long") },
     isBlacklisted: {
       type: Sequelize.BOOLEAN,
       defaultValue: false,

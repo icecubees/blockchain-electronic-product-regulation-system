@@ -1,4 +1,5 @@
 const auditService = require("../services/audit.service");
+const integrationJobService = require("../services/integration-job.service");
 const { uploadBufferToIpfs } = require("../services/pinata.service");
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -55,6 +56,23 @@ async function handleUpload(req, res, options) {
 
     res.send({ ipfsHash });
   } catch (error) {
+    await integrationJobService.createJob({
+      jobType: integrationJobService.JOB_TYPE.FILE_UPLOAD_FAILURE,
+      targetType: options.targetType,
+      targetId: req.body.targetId || null,
+      status: integrationJobService.JOB_STATUS.MANUAL_REVIEW,
+      payload: {
+        targetId: req.body.targetId || null,
+        filename: req.file?.originalname || null,
+        mimeType: req.file?.mimetype || null,
+        size: req.file?.size || null,
+        metadataName: options.metadataName,
+        reason: "File payload is not persisted server-side, manual re-upload is required.",
+      },
+      error,
+      operator: req.user,
+      req,
+    });
     res.status(500).send({ message: error.message });
   }
 }
@@ -78,4 +96,25 @@ exports.uploadComplaintEvidence = (req, res) =>
     allowedMimeTypes: ["application/pdf", "image/png", "image/jpeg"],
     metadataName: "ComplaintEvidence",
     targetType: "COMPLAINT_EVIDENCE",
+  });
+
+exports.uploadSellerComplaintEvidence = (req, res) =>
+  handleUpload(req, res, {
+    allowedMimeTypes: ["application/pdf", "image/png", "image/jpeg"],
+    metadataName: "SellerComplaintEvidence",
+    targetType: "SELLER_COMPLAINT_EVIDENCE",
+  });
+
+exports.uploadAfterSalesEvidence = (req, res) =>
+  handleUpload(req, res, {
+    allowedMimeTypes: ["application/pdf", "image/png", "image/jpeg"],
+    metadataName: "AfterSalesEvidence",
+    targetType: "AFTER_SALES_EVIDENCE",
+  });
+
+exports.uploadPublicSellerQualification = (req, res) =>
+  handleUpload(req, res, {
+    allowedMimeTypes: ["application/pdf", "image/png", "image/jpeg"],
+    metadataName: `SellerQualification-${String(req.body.qualificationKind || "generic")}`,
+    targetType: "SELLER_QUALIFICATION_FILE",
   });
