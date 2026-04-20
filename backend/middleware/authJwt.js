@@ -19,6 +19,9 @@ async function verifyToken(req, res, next) {
     if (!user) {
       return res.status(401).send({ message: "User not found for token." });
     }
+    if (user.status === 2) {
+      return res.status(403).send({ message: "Account is frozen." });
+    }
 
     req.userId = user.id;
     req.user = user;

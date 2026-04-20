@@ -121,6 +121,74 @@ async function ensureRuntimeSchema(sequelize, Sequelize) {
     });
   }
 
+  if (!normalizedTables.includes("after_sales_requests")) {
+    await queryInterface.createTable("after_sales_requests", {
+      id: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        autoIncrement: true,
+        primaryKey: true,
+      },
+      orderId: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+      },
+      productId: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+      },
+      buyerId: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+      },
+      type: {
+        type: Sequelize.STRING,
+        allowNull: false,
+      },
+      description: {
+        type: Sequelize.TEXT("long"),
+        allowNull: false,
+      },
+      evidenceIpfsHash: {
+        type: Sequelize.STRING,
+        allowNull: true,
+      },
+      status: {
+        type: Sequelize.STRING,
+        allowNull: false,
+        defaultValue: "pending_seller",
+      },
+      sellerResponse: {
+        type: Sequelize.TEXT("long"),
+        allowNull: true,
+      },
+      sellerEvidenceIpfsHash: {
+        type: Sequelize.STRING,
+        allowNull: true,
+      },
+      sellerRespondedAt: {
+        type: Sequelize.DATE,
+        allowNull: true,
+      },
+      escalatedAt: {
+        type: Sequelize.DATE,
+        allowNull: true,
+      },
+      escalatedBy: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+      },
+      createdAt: {
+        type: Sequelize.DATE,
+        allowNull: false,
+      },
+      updatedAt: {
+        type: Sequelize.DATE,
+        allowNull: false,
+      },
+    });
+  }
+
   if (normalizedTables.includes("products")) {
     const products = await queryInterface.describeTable("products");
 
@@ -258,6 +326,14 @@ async function ensureRuntimeSchema(sequelize, Sequelize) {
     });
     await ensureColumn(queryInterface, "users", users, "qualificationNotes", {
       type: Sequelize.TEXT("long"),
+      allowNull: true,
+    });
+    await ensureColumn(queryInterface, "users", users, "frozenReason", {
+      type: Sequelize.TEXT("long"),
+      allowNull: true,
+    });
+    await ensureColumn(queryInterface, "users", users, "frozenAt", {
+      type: Sequelize.DATE,
       allowNull: true,
     });
   }

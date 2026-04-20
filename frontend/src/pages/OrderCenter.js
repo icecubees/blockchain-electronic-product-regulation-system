@@ -16,6 +16,15 @@ const COMPLAINT_TYPES = [
   { value: "accessory_mismatch", label: "配件不符" },
   { value: "safety_risk", label: "安全风险" },
 ];
+const DIRECT_COMPLAINT_TYPES = COMPLAINT_TYPES.filter((item) =>
+  [
+    "battery_issue",
+    "counterfeit_suspected",
+    "refurbished_not_disclosed",
+    "serial_number_mismatch",
+    "safety_risk",
+  ].includes(item.value)
+);
 
 const AFTER_SALES_TYPES = [
   { value: "warranty_claim", label: "保修申请" },
@@ -64,46 +73,59 @@ function getAfterSalesTypeLabel(type) {
   return AFTER_SALES_TYPES.find((item) => item.value === type)?.label || type || "售后记录";
 }
 
+function getAfterSalesRequestStatusLabel(status) {
+  switch (status) {
+    case "seller_responded":
+      return "卖家已响应";
+    case "escalated_to_complaint":
+      return "已升级投诉";
+    case "closed":
+      return "已关闭";
+    default:
+      return "待卖家处理";
+  }
+}
+
 function getPaymentStatusLabel(status) {
   switch (status) {
     case "paid":
-      return "Paid";
+      return "已支付";
     case "refunded":
-      return "Refunded";
+      return "已退款";
     case "failed":
-      return "Payment failed";
+      return "支付失败";
     default:
-      return "Pending payment";
+      return "待支付";
   }
 }
 
 function getRefundStatusLabel(status) {
   switch (status) {
     case "pending_review":
-      return "Refund pending review";
+      return "退款审核中";
     case "refunded":
-      return "Refund completed";
+      return "退款完成";
     case "rejected":
-      return "Refund rejected";
+      return "退款驳回";
     default:
-      return "No refund";
+      return "无退款";
   }
 }
 
 function getRecallNotificationStatusLabel(status) {
   switch (status) {
     case "viewed":
-      return "Viewed";
+      return "已查看";
     case "acknowledged":
-      return "Acknowledged";
+      return "已确认";
     case "closed":
-      return "Closed";
+      return "已关闭";
     default:
-      return "Pending recall action";
+      return "待处理";
   }
 }
 
-function formatOrderDateTime(value, fallback = "N/A") {
+function formatOrderDateTime(value, fallback = "暂无") {
   return value ? new Date(value).toLocaleString() : fallback;
 }
 
@@ -112,8 +134,14 @@ function formatOrderAmount(value) {
 }
 
 const INITIAL_COMPLAINT_STATE = {
-  type: COMPLAINT_TYPES[0].value,
+  type: DIRECT_COMPLAINT_TYPES[0].value,
   reason: "",
+  file: null,
+};
+
+const INITIAL_AFTER_SALES_REQUEST_STATE = {
+  type: AFTER_SALES_TYPES[0].value,
+  description: "",
   file: null,
 };
 
@@ -129,12 +157,18 @@ export default function OrderCenter() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState(undefined);
+  const [afterSalesRequestOrder, setAfterSalesRequestOrder] = useState(null);
+  const [afterSalesRequestForm, setAfterSalesRequestForm] = useState(
+    INITIAL_AFTER_SALES_REQUEST_STATE
+  );
   const [complaintOrder, setComplaintOrder] = useState(null);
   const [complaintForm, setComplaintForm] = useState(INITIAL_COMPLAINT_STATE);
   const [sellerEvidenceFiles, setSellerEvidenceFiles] = useState({});
+  const [afterSalesRequestResponseFiles, setAfterSalesRequestResponseFiles] = useState({});
   const [ratingForms, setRatingForms] = useState({});
   const [shipmentForms, setShipmentForms] = useState({});
   const [sellerResponseForms, setSellerResponseForms] = useState({});
+  const [afterSalesRequestResponseForms, setAfterSalesRequestResponseForms] = useState({});
   const [afterSalesForms, setAfterSalesForms] = useState({});
 
   const navigate = useNavigate();
@@ -201,6 +235,11 @@ export default function OrderCenter() {
     setComplaintForm(INITIAL_COMPLAINT_STATE);
   };
 
+  const resetAfterSalesRequestModal = () => {
+    setAfterSalesRequestOrder(null);
+    setAfterSalesRequestForm(INITIAL_AFTER_SALES_REQUEST_STATE);
+  };
+
   const resetAfterSalesForm = (orderId) => {
     setAfterSalesForms((previous) => ({
       ...previous,
@@ -216,6 +255,38 @@ export default function OrderCenter() {
       loadOrders();
     } catch (error) {
       window.alert(`操作失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmitAfterSalesRequest = async (event) => {
+    event.preventDefault();
+    if (!afterSalesRequestForm.description.trim()) {
+      window.alert("请输入售后申请说明。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      let evidenceIpfsHash = null;
+      if (afterSalesRequestForm.file) {
+        const uploadResponse = await FileService.uploadAfterSalesEvidence(afterSalesRequestForm.file);
+        evidenceIpfsHash = uploadResponse.data.ipfsHash;
+      }
+
+      await ProductService.createAfterSalesRequest({
+        orderId: afterSalesRequestOrder.id,
+        type: afterSalesRequestForm.type,
+        description: afterSalesRequestForm.description,
+        evidenceIpfsHash,
+      });
+
+      window.alert("售后申请提交成功。");
+      resetAfterSalesRequestModal();
+      loadOrders();
+    } catch (error) {
+      window.alert(`售后申请提交失败：${error.response?.data?.message || error.message}`);
     } finally {
       setLoading(false);
     }
@@ -362,14 +433,43 @@ export default function OrderCenter() {
     }
   };
 
+  const handleAfterSalesRequestResponse = async (requestId) => {
+    const response = String(afterSalesRequestResponseForms[requestId] || "").trim();
+    if (!response) {
+      window.alert("请输入售后处理回复。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      let evidenceIpfsHash = null;
+      if (afterSalesRequestResponseFiles[requestId]) {
+        const uploadResponse = await FileService.uploadAfterSalesEvidence(
+          afterSalesRequestResponseFiles[requestId]
+        );
+        evidenceIpfsHash = uploadResponse.data.ipfsHash;
+      }
+
+      await ProductService.respondToAfterSalesRequest(requestId, response, evidenceIpfsHash);
+      window.alert("售后申请回复成功。");
+      setAfterSalesRequestResponseForms((previous) => ({ ...previous, [requestId]: "" }));
+      setAfterSalesRequestResponseFiles((previous) => ({ ...previous, [requestId]: null }));
+      loadOrders();
+    } catch (error) {
+      window.alert(`售后申请回复失败：${error.response?.data?.message || error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleRecallNotificationUpdate = async (notificationId, status = "acknowledged") => {
     setLoading(true);
     try {
       await ProductService.updateRecallNotificationStatus(notificationId, status);
-      window.alert("Recall notice updated.");
+      window.alert("召回通知状态已更新。");
       loadOrders();
     } catch (error) {
-      window.alert(`Recall notice update failed: ${error.response?.data?.message || error.message}`);
+      window.alert(`召回通知更新失败：${error.response?.data?.message || error.message}`);
     } finally {
       setLoading(false);
     }
@@ -396,11 +496,18 @@ export default function OrderCenter() {
           const shipmentForm = shipmentForms[order.id] || { trackingNumber: "", shippingCarrier: "" };
           const sellerResponse = sellerResponseForms[order.id] || "";
           const afterSalesForm = afterSalesForms[order.id] || INITIAL_AFTER_SALES_FORM;
+          const afterSalesRequests = Array.isArray(order.afterSalesRequests)
+            ? order.afterSalesRequests
+            : [];
           const recallNotification = Array.isArray(order.recallNotifications)
             ? order.recallNotifications[0]
             : null;
           const canRecordAfterSales =
             currentUser?.role === "seller" && [1, 2, 3, 4].includes(order.status);
+          const canCreateAfterSalesRequest =
+            currentUser?.role === "buyer" && [0, 1, 2].includes(order.status);
+          const canOpenComplaint =
+            currentUser?.role === "buyer" && [0, 1, 2].includes(order.status) && order.status !== 3;
 
           return (
             <div key={order.id} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow">
@@ -447,19 +554,19 @@ export default function OrderCenter() {
 
               <div className="grid gap-4 text-sm md:grid-cols-3">
                 <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-                  <div className="text-emerald-700">Payment status</div>
+                  <div className="text-emerald-700">支付状态</div>
                   <div className="mt-1 font-semibold text-slate-900">
                     {getPaymentStatusLabel(order.paymentStatus)}
                   </div>
                 </div>
                 <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-                  <div className="text-emerald-700">Payment reference</div>
+                  <div className="text-emerald-700">支付凭证</div>
                   <div className="mt-1 font-semibold text-slate-900">
-                    {order.paymentReference || order.paymentMethod || "N/A"}
+                    {order.paymentReference || order.paymentMethod || "暂无"}
                   </div>
                 </div>
                 <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-                  <div className="text-emerald-700">Paid at</div>
+                  <div className="text-emerald-700">支付时间</div>
                   <div className="mt-1 font-semibold text-slate-900">
                     {formatOrderDateTime(order.paidAt)}
                   </div>
@@ -468,19 +575,19 @@ export default function OrderCenter() {
 
               <div className="grid gap-4 text-sm md:grid-cols-3">
                 <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
-                  <div className="text-amber-700">Refund status</div>
+                  <div className="text-amber-700">退款状态</div>
                   <div className="mt-1 font-semibold text-slate-900">
                     {getRefundStatusLabel(order.refundStatus)}
                   </div>
                 </div>
                 <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
-                  <div className="text-amber-700">Refund amount</div>
+                  <div className="text-amber-700">退款金额</div>
                   <div className="mt-1 font-semibold text-slate-900">
                     {formatOrderAmount(order.refundAmount)}
                   </div>
                 </div>
                 <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
-                  <div className="text-amber-700">Refunded at</div>
+                  <div className="text-amber-700">退款时间</div>
                   <div className="mt-1 font-semibold text-slate-900">
                     {formatOrderDateTime(order.refundedAt)}
                   </div>
@@ -491,15 +598,15 @@ export default function OrderCenter() {
                 <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <div className="font-semibold text-rose-800">Recall notice</div>
+                      <div className="font-semibold text-rose-800">召回通知</div>
                       <div className="mt-1 text-sm text-rose-700">
-                        Status: {getRecallNotificationStatusLabel(recallNotification.status)}
+                        状态：{getRecallNotificationStatusLabel(recallNotification.status)}
                       </div>
                       <div className="mt-1 text-sm text-rose-700">
-                        Notified at: {formatOrderDateTime(recallNotification.notifiedAt)}
+                        通知时间：{formatOrderDateTime(recallNotification.notifiedAt)}
                       </div>
                       <div className="mt-1 text-sm text-rose-700">
-                        Reason: {order.product?.recallReason || "Recall in progress"}
+                        召回原因：{order.product?.recallReason || "召回处理中"}
                       </div>
                     </div>
                     {currentUser?.role === "buyer" &&
@@ -510,7 +617,7 @@ export default function OrderCenter() {
                         }
                         className="rounded bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
                       >
-                        Acknowledge recall
+                        确认已知悉
                       </button>
                     ) : null}
                   </div>
@@ -523,10 +630,109 @@ export default function OrderCenter() {
                 </div>
               ) : null}
 
+              {afterSalesRequests.length > 0 ? (
+                <div className="rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
+                  <div className="mb-3 font-semibold text-cyan-900">售后申请</div>
+                  <div className="space-y-3">
+                    {afterSalesRequests.map((request) => {
+                      const requestResponse = afterSalesRequestResponseForms[request.id] || "";
+
+                      return (
+                        <div
+                          key={request.id}
+                          className="rounded-xl border border-cyan-200 bg-white p-3 text-sm"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <div className="font-semibold text-slate-900">
+                                {getAfterSalesTypeLabel(request.type)}
+                              </div>
+                              <div className="mt-1 text-slate-500">
+                                状态：{getAfterSalesRequestStatusLabel(request.status)}
+                              </div>
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              {request.createdAt
+                                ? new Date(request.createdAt).toLocaleString()
+                                : "未知时间"}
+                            </div>
+                          </div>
+
+                          <div className="mt-3 text-slate-700">{request.description}</div>
+
+                          {request.evidenceIpfsHash ? (
+                            <a
+                              href={`${IPFS_GATEWAY}${request.evidenceIpfsHash}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-2 inline-block text-indigo-600 underline"
+                            >
+                              查看售后申请证据
+                            </a>
+                          ) : null}
+
+                          {request.sellerResponse ? (
+                            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="font-semibold text-slate-700">卖家售后响应</div>
+                              <div className="mt-1 text-slate-600">{request.sellerResponse}</div>
+                              {request.sellerEvidenceIpfsHash ? (
+                                <a
+                                  href={`${IPFS_GATEWAY}${request.sellerEvidenceIpfsHash}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-2 inline-block text-indigo-600 underline"
+                                >
+                                  查看卖家响应证据
+                                </a>
+                              ) : null}
+                            </div>
+                          ) : null}
+
+                          {currentUser?.role === "seller" && request.status === "pending_seller" ? (
+                            <div className="mt-4 space-y-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3">
+                              <div className="font-semibold text-cyan-900">回复售后申请</div>
+                              <textarea
+                                rows={3}
+                                value={requestResponse}
+                                onChange={(event) =>
+                                  setAfterSalesRequestResponseForms((previous) => ({
+                                    ...previous,
+                                    [request.id]: event.target.value,
+                                  }))
+                                }
+                                className="w-full rounded border border-cyan-200 px-3 py-2 text-sm"
+                                placeholder="说明维修方案、补偿方案或处理安排。"
+                              />
+                              <input
+                                type="file"
+                                accept=".pdf,image/png,image/jpeg"
+                                onChange={(event) =>
+                                  setAfterSalesRequestResponseFiles((previous) => ({
+                                    ...previous,
+                                    [request.id]: event.target.files[0] || null,
+                                  }))
+                                }
+                                className="block w-full text-sm text-slate-500 file:mr-4 file:rounded file:border-0 file:bg-cyan-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-cyan-700 hover:file:bg-cyan-200"
+                              />
+                              <button
+                                onClick={() => handleAfterSalesRequestResponse(request.id)}
+                                className="rounded bg-cyan-700 px-4 py-2 text-white hover:bg-cyan-800"
+                              >
+                                提交售后响应
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
               {order.complaintReason ? (
                 <div className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm">
                   <div>
-                    <div className="font-semibold text-rose-700">投诉信息</div>
+                    <div className="font-semibold text-rose-700">投诉记录</div>
                     <div className="mt-1 text-rose-700">
                       {getComplaintTypeLabel(order.complaintType)} / {order.complaintReason}
                     </div>
@@ -563,7 +769,7 @@ export default function OrderCenter() {
 
               {order.afterSalesRecords?.length > 0 ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="mb-3 font-semibold text-slate-800">售后历史</div>
+                  <div className="mb-3 font-semibold text-slate-800">卖家售后记录</div>
                   <div className="space-y-3">
                     {order.afterSalesRecords.map((record) => (
                       <div key={record.id} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
@@ -599,15 +805,28 @@ export default function OrderCenter() {
                   >
                     确认收货
                   </button>
-                  <button
-                    onClick={() => {
-                      setComplaintOrder(order);
-                      setComplaintForm(INITIAL_COMPLAINT_STATE);
-                    }}
-                    className="rounded bg-rose-600 px-4 py-2 text-white hover:bg-rose-700"
-                  >
-                    发起投诉
-                  </button>
+                  {canCreateAfterSalesRequest ? (
+                    <button
+                      onClick={() => {
+                        setAfterSalesRequestOrder(order);
+                        setAfterSalesRequestForm(INITIAL_AFTER_SALES_REQUEST_STATE);
+                      }}
+                      className="rounded bg-cyan-600 px-4 py-2 text-white hover:bg-cyan-700"
+                    >
+                      申请售后
+                    </button>
+                  ) : null}
+                  {canOpenComplaint ? (
+                    <button
+                      onClick={() => {
+                        setComplaintOrder(order);
+                        setComplaintForm(INITIAL_COMPLAINT_STATE);
+                      }}
+                      className="rounded bg-rose-600 px-4 py-2 text-white hover:bg-rose-700"
+                    >
+                      监管投诉
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -640,6 +859,33 @@ export default function OrderCenter() {
                   >
                     提交评价
                   </button>
+                </div>
+              ) : null}
+
+              {currentUser?.role === "buyer" && [1, 2].includes(order.status) ? (
+                <div className="flex flex-wrap gap-2">
+                  {canCreateAfterSalesRequest ? (
+                    <button
+                      onClick={() => {
+                        setAfterSalesRequestOrder(order);
+                        setAfterSalesRequestForm(INITIAL_AFTER_SALES_REQUEST_STATE);
+                      }}
+                      className="rounded bg-cyan-600 px-4 py-2 text-white hover:bg-cyan-700"
+                    >
+                      申请售后
+                    </button>
+                  ) : null}
+                  {canOpenComplaint ? (
+                    <button
+                      onClick={() => {
+                        setComplaintOrder(order);
+                        setComplaintForm(INITIAL_COMPLAINT_STATE);
+                      }}
+                      className="rounded bg-rose-600 px-4 py-2 text-white hover:bg-rose-700"
+                    >
+                      监管投诉
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -757,16 +1003,118 @@ export default function OrderCenter() {
         {orders.length === 0 ? <div className="py-10 text-center text-slate-500">暂无订单记录。</div> : null}
       </div>
 
+      {afterSalesRequestOrder ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="bg-cyan-700 p-4">
+              <h2 className="text-lg font-bold text-white">提交售后申请</h2>
+            </div>
+
+            <form onSubmit={handleSubmitAfterSalesRequest} className="p-6">
+              <div className="mb-4 text-sm text-slate-600">
+                当前商品：
+                <span className="font-bold text-slate-800"> {afterSalesRequestOrder.product?.name}</span>
+              </div>
+
+              <div className="mb-4">
+                <label htmlFor="after-sales-request-type" className="mb-1 block text-sm font-medium text-slate-700">
+                  售后诉求
+                </label>
+                <select
+                  id="after-sales-request-type"
+                  value={afterSalesRequestForm.type}
+                  onChange={(event) =>
+                    setAfterSalesRequestForm((previous) => ({
+                      ...previous,
+                      type: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded border border-slate-300 p-2"
+                >
+                  {AFTER_SALES_TYPES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="mb-4">
+                <label htmlFor="after-sales-request-description" className="mb-1 block text-sm font-medium text-slate-700">
+                  申请说明 <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  id="after-sales-request-description"
+                  required
+                  rows={4}
+                  className="w-full rounded border border-slate-300 p-2"
+                  placeholder="请描述故障、履约问题或希望的处理方式。"
+                  value={afterSalesRequestForm.description}
+                  onChange={(event) =>
+                    setAfterSalesRequestForm((previous) => ({
+                      ...previous,
+                      description: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="mb-6">
+                <label htmlFor="after-sales-request-evidence" className="mb-1 block text-sm font-medium text-slate-700">
+                  证据文件（可选）
+                </label>
+                <input
+                  id="after-sales-request-evidence"
+                  type="file"
+                  accept=".pdf,image/png,image/jpeg"
+                  onChange={(event) =>
+                    setAfterSalesRequestForm((previous) => ({
+                      ...previous,
+                      file: event.target.files[0] || null,
+                    }))
+                  }
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:rounded file:border-0 file:bg-cyan-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-cyan-700 hover:file:bg-cyan-100"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  onClick={resetAfterSalesRequestModal}
+                  className="rounded bg-slate-100 px-4 py-2 text-slate-700 hover:bg-slate-200"
+                  disabled={loading}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className={`rounded px-4 py-2 font-bold text-white ${
+                    loading ? "cursor-wait bg-cyan-400" : "bg-cyan-700 hover:bg-cyan-800"
+                  }`}
+                >
+                  {loading ? "提交中..." : "提交售后申请"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
       {complaintOrder ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
           <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="bg-rose-600 p-4">
-              <h2 className="text-lg font-bold text-white">提交投诉证据</h2>
+              <h2 className="text-lg font-bold text-white">提交监管投诉</h2>
             </div>
 
             <form onSubmit={handleSubmitComplaint} className="p-6">
               <div className="mb-4 text-sm text-slate-600">
                 当前商品：<span className="font-bold text-slate-800">{complaintOrder.product?.name}</span>
+              </div>
+              <div className="mb-4 rounded-lg border border-rose-100 bg-rose-50 p-3 text-sm text-rose-700">
+                此入口仅用于高风险问题，如安全风险、疑似假货、翻新未披露或序列号异常。
+                普通质量/履约问题请先走售后申请。
               </div>
 
               <div className="mb-4">
@@ -784,7 +1132,7 @@ export default function OrderCenter() {
                   }
                   className="w-full rounded border border-slate-300 p-2"
                 >
-                  {COMPLAINT_TYPES.map((option) => (
+                  {DIRECT_COMPLAINT_TYPES.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>

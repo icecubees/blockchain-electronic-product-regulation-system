@@ -2,10 +2,10 @@ import React, { useState } from "react";
 
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
 
-const DEFAULT_SELLER_REASON = "资质审核通过。";
+const DEFAULT_SELLER_REASON = "资质审核通过，允许卖家进入电子产品经营流程。";
 const DEFAULT_PRODUCT_APPROVE_REASON = "电子产品审核通过，允许上架。";
-const DEFAULT_PRODUCT_REJECT_REASON = "电子产品审核不通过。";
-const DEFAULT_RECALL_REASON = "存在潜在安全或合规召回风险。";
+const DEFAULT_PRODUCT_REJECT_REASON = "电子产品审核未通过，请补充或修正资料后重新提交。";
+const DEFAULT_RECALL_REASON = "存在潜在安全风险或重大合规风险，建议立即召回。";
 
 const CATEGORY_LABELS = {
   mobile_phone: "手机",
@@ -29,10 +29,10 @@ const QUALIFICATION_IPFS_FIELDS = new Set([
 const REASON_CODE_LABELS = {
   missing_ccc_information: "缺少 CCC 信息",
   missing_device_identifier: "缺少设备唯一标识",
-  undisclosed_refurbished_status: "未披露翻新状态",
-  battery_safety_concern: "电池安全风险",
-  report_model_mismatch: "报告型号不一致",
-  suspected_counterfeit: "疑似假货",
+  undisclosed_refurbished_status: "翻新状态披露不完整",
+  battery_safety_concern: "存在电池安全风险",
+  report_model_mismatch: "检测报告与型号不一致",
+  suspected_counterfeit: "疑似假货或来源异常",
 };
 
 function formatBoolean(value) {
@@ -53,7 +53,7 @@ function SellerReviewCard({ seller, loading, onSubmit }) {
   const submit = async (action) => {
     const trimmed = reason.trim();
     if (!trimmed) {
-      window.alert("请输入审核理由。");
+      window.alert("请输入审核意见。");
       return;
     }
 
@@ -106,7 +106,7 @@ function SellerReviewCard({ seller, loading, onSubmit }) {
         onChange={(event) => setReason(event.target.value)}
         rows={3}
         className="w-full rounded border border-blue-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
-        placeholder="此内容将写入审计日志"
+        placeholder="该内容将写入审计日志"
       />
 
       <div className="flex gap-2">
@@ -171,7 +171,7 @@ function ProductReviewCard({ product, loading, onSubmit, onForceDelist, onRecall
   const submit = async (decision, rawReason) => {
     const trimmed = rawReason.trim();
     if (!trimmed) {
-      window.alert("请输入审核理由。");
+      window.alert("请输入审核意见。");
       return;
     }
 
@@ -195,7 +195,8 @@ function ProductReviewCard({ product, loading, onSubmit, onForceDelist, onRecall
           <div className="font-semibold text-gray-800">{product.name}</div>
           <div className="mt-1 text-sm text-gray-500">{product.description || "暂无描述"}</div>
           <div className="mt-2 text-xs text-gray-500">
-            卖家：{product.seller?.username || "未知"} | 价格：{product.price} ETH | 库存：{product.stock}
+            卖家：{product.seller?.username || "未知"} | 价格：{product.price} ETH | 库存：
+            {product.stock}
           </div>
           <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
             <span className="rounded bg-slate-100 px-2 py-1">
@@ -282,7 +283,7 @@ function ProductReviewCard({ product, loading, onSubmit, onForceDelist, onRecall
             disabled={loading}
             className="rounded bg-emerald-600 px-3 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-60"
           >
-            通过
+            审核通过
           </button>
         </div>
 
@@ -300,7 +301,7 @@ function ProductReviewCard({ product, loading, onSubmit, onForceDelist, onRecall
               disabled={loading}
               className="rounded bg-amber-600 px-3 py-2 text-sm text-white hover:bg-amber-700 disabled:opacity-60"
             >
-              驳回
+              审核驳回
             </button>
             <button
               onClick={() => onForceDelist(product)}
@@ -351,7 +352,7 @@ export default function RegulatorReviewQueues({
   if (pendingSellers.length === 0 && pendingProducts.length === 0) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-slate-600">
-        当前没有待处理卖家申请，也没有待审电子产品。
+        当前没有待处理卖家申请，也没有待审核电子产品。
       </div>
     );
   }
@@ -361,7 +362,9 @@ export default function RegulatorReviewQueues({
       <section className="rounded border-l-4 border-blue-400 bg-blue-50 p-4 shadow">
         <h2 className="mb-3 text-lg font-bold text-blue-800">待审核卖家（{pendingSellers.length}）</h2>
         {pendingSellers.length === 0 ? (
-          <div className="rounded border border-blue-100 bg-white p-3 text-sm text-slate-600">暂无待审卖家。</div>
+          <div className="rounded border border-blue-100 bg-white p-3 text-sm text-slate-600">
+            暂无待审核卖家。
+          </div>
         ) : (
           <div className="space-y-3">
             {pendingSellers.map((seller) => (
@@ -377,9 +380,13 @@ export default function RegulatorReviewQueues({
       </section>
 
       <section className="rounded border-l-4 border-yellow-400 bg-yellow-50 p-4 shadow">
-        <h2 className="mb-3 text-lg font-bold text-yellow-800">待审电子产品（{pendingProducts.length}）</h2>
+        <h2 className="mb-3 text-lg font-bold text-yellow-800">
+          待审核电子产品（{pendingProducts.length}）
+        </h2>
         {pendingProducts.length === 0 ? (
-          <div className="rounded border border-yellow-100 bg-white p-3 text-sm text-slate-600">暂无待审商品。</div>
+          <div className="rounded border border-yellow-100 bg-white p-3 text-sm text-slate-600">
+            暂无待审核商品。
+          </div>
         ) : (
           <div className="space-y-3">
             {pendingProducts.map((product) => (

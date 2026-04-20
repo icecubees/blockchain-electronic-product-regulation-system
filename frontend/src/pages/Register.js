@@ -113,7 +113,9 @@ export default function Register() {
         {message ? (
           <div
             className={`mb-5 rounded-lg p-3 text-sm ${
-              messageTone === "success" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+              messageTone === "success"
+                ? "bg-emerald-100 text-emerald-700"
+                : "bg-rose-100 text-rose-700"
             }`}
           >
             {message}

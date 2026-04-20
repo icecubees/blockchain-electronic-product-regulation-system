@@ -66,3 +66,75 @@ test("getAuditStats returns electronics-specific summary metrics", async (t) => 
   assert.ok(res.body.trends.some((bucket) => bucket.recalls >= 0));
   assert.ok(res.body.trends.some((bucket) => bucket.reviewBlocks >= 0));
 });
+
+test("getAuditLogs supports advanced filters and pagination", async (t) => {
+  const originalAuditFindAll = db.auditLog.findAll;
+  const originalAuditCount = db.auditLog.count;
+
+  let capturedFindAllQuery = null;
+  let capturedCountQuery = null;
+
+  db.auditLog.findAll = async (query) => {
+    capturedFindAllQuery = query;
+    return [
+      {
+        id: 2001,
+        action: "ORDER_REFUND_COMPLETED",
+        targetType: "ORDER",
+        targetId: "33",
+      },
+    ];
+  };
+  db.auditLog.count = async (query) => {
+    capturedCountQuery = query;
+    return 21;
+  };
+
+  t.after(() => {
+    db.auditLog.findAll = originalAuditFindAll;
+    db.auditLog.count = originalAuditCount;
+  });
+
+  const req = {
+    query: {
+      keyword: "refund",
+      operatorKeyword: "regulator_demo",
+      targetId: "33",
+      action: "ORDER_REFUND_COMPLETED",
+      result: "SUCCESS",
+      targetType: "ORDER",
+      dateFrom: "2026-04-01",
+      dateTo: "2026-04-15",
+      page: "2",
+      pageSize: "5",
+    },
+  };
+  const res = createMockRes();
+
+  await auditController.getAuditLogs(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.items.length, 1);
+  assert.deepEqual(res.body.pagination, {
+    page: 2,
+    pageSize: 5,
+    total: 21,
+    totalPages: 5,
+  });
+  assert.equal(capturedFindAllQuery.limit, 5);
+  assert.equal(capturedFindAllQuery.offset, 5);
+  assert.equal(capturedFindAllQuery.where.action, "ORDER_REFUND_COMPLETED");
+  assert.equal(capturedFindAllQuery.where.result, "SUCCESS");
+  assert.equal(capturedFindAllQuery.where.targetType, "ORDER");
+  assert.equal(capturedFindAllQuery.where.targetId, "33");
+  assert.equal(
+    capturedFindAllQuery.where.createdAt[db.Sequelize.Op.gte].toISOString(),
+    "2026-04-01T00:00:00.000Z"
+  );
+  assert.equal(
+    capturedFindAllQuery.where.createdAt[db.Sequelize.Op.lte].toISOString(),
+    "2026-04-15T23:59:59.999Z"
+  );
+  assert.equal(capturedFindAllQuery.where[db.Sequelize.Op.and].length, 2);
+  assert.deepEqual(capturedCountQuery, { where: capturedFindAllQuery.where });
+});

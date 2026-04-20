@@ -195,6 +195,162 @@ test("raiseComplaint stores structured complaint type", async (t) => {
   assert.equal(auditCalls[0].details.complaintType, "battery_issue");
 });
 
+test("createAfterSalesRequest stores buyer request for eligible order", async (t) => {
+  const originalFindByPkOrder = db.order.findByPk;
+  const originalFindOneRequest = db.afterSalesRequest.findOne;
+  const originalCreateRequest = db.afterSalesRequest.create;
+  const originalFindByPkRequest = db.afterSalesRequest.findByPk;
+  const originalRecord = auditService.record;
+
+  let createdPayload = null;
+  const auditCalls = [];
+  const order = {
+    id: 91,
+    productId: 14,
+    buyerId: 5,
+    status: 2,
+    product: {
+      id: 14,
+      sellerId: 8,
+    },
+  };
+
+  db.order.findByPk = async () => order;
+  db.afterSalesRequest.findOne = async () => null;
+  db.afterSalesRequest.create = async (payload) => {
+    createdPayload = { id: 301, ...payload };
+    return createdPayload;
+  };
+  db.afterSalesRequest.findByPk = async () => ({
+    ...createdPayload,
+    buyer: { id: 5, username: "buyer_demo", role: "buyer" },
+  });
+  auditService.record = async (payload) => {
+    auditCalls.push(payload);
+  };
+
+  t.after(() => {
+    db.order.findByPk = originalFindByPkOrder;
+    db.afterSalesRequest.findOne = originalFindOneRequest;
+    db.afterSalesRequest.create = originalCreateRequest;
+    db.afterSalesRequest.findByPk = originalFindByPkRequest;
+    auditService.record = originalRecord;
+  });
+
+  const req = {
+    body: {
+      orderId: 91,
+      type: "repair",
+      description: "The camera module keeps disconnecting after delivery.",
+      evidenceIpfsHash: "QmAfterSalesRequest",
+    },
+    userId: 5,
+    user: { id: 5, role: "buyer", username: "buyer_demo" },
+  };
+  const res = createMockRes();
+
+  await productController.createAfterSalesRequest(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(createdPayload.type, "repair");
+  assert.equal(createdPayload.status, "pending_seller");
+  assert.equal(createdPayload.evidenceIpfsHash, "QmAfterSalesRequest");
+  assert.equal(auditCalls[0].action, "AFTER_SALES_REQUEST_CREATED");
+});
+
+test("respondToAfterSalesRequest stores seller response", async (t) => {
+  const originalFindByPkRequest = db.afterSalesRequest.findByPk;
+  const originalRecord = auditService.record;
+  const auditCalls = [];
+
+  const afterSalesRequest = {
+    id: 302,
+    orderId: 92,
+    status: "pending_seller",
+    sellerResponse: null,
+    sellerEvidenceIpfsHash: null,
+    sellerRespondedAt: null,
+    order: {
+      id: 92,
+      product: {
+        sellerId: 8,
+      },
+    },
+    buyer: { id: 6, username: "buyer_two", role: "buyer" },
+    async save() {
+      return this;
+    },
+  };
+
+  db.afterSalesRequest.findByPk = async () => afterSalesRequest;
+  auditService.record = async (payload) => {
+    auditCalls.push(payload);
+  };
+
+  t.after(() => {
+    db.afterSalesRequest.findByPk = originalFindByPkRequest;
+    auditService.record = originalRecord;
+  });
+
+  const req = {
+    body: {
+      requestId: 302,
+      response: "We will replace the module and provide a prepaid return label.",
+      evidenceIpfsHash: "QmSellerAfterSalesReply",
+    },
+    userId: 8,
+    user: { id: 8, role: "seller", username: "seller_demo" },
+  };
+  const res = createMockRes();
+
+  await productController.respondToAfterSalesRequest(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(afterSalesRequest.status, "seller_responded");
+  assert.equal(
+    afterSalesRequest.sellerResponse,
+    "We will replace the module and provide a prepaid return label."
+  );
+  assert.equal(afterSalesRequest.sellerEvidenceIpfsHash, "QmSellerAfterSalesReply");
+  assert.equal(auditCalls[0].action, "AFTER_SALES_REQUEST_RESPONDED");
+});
+
+test("raiseComplaint requires an after-sales request for ordinary issues", async (t) => {
+  const originalFindByPkOrder = db.order.findByPk;
+  const originalFindByPkUser = db.user.findByPk;
+  const originalFindOneRequest = db.afterSalesRequest.findOne;
+
+  db.order.findByPk = async () => ({
+    id: 93,
+    buyerId: 5,
+    status: 2,
+  });
+  db.user.findByPk = async () => ({ id: 5, ethAddress: "0xbuyer" });
+  db.afterSalesRequest.findOne = async () => null;
+
+  t.after(() => {
+    db.order.findByPk = originalFindByPkOrder;
+    db.user.findByPk = originalFindByPkUser;
+    db.afterSalesRequest.findOne = originalFindOneRequest;
+  });
+
+  const req = {
+    body: {
+      orderId: 93,
+      complaintType: "performance_issue",
+      reason: "The device runs far slower than advertised.",
+    },
+    userId: 5,
+    user: { id: 5, role: "buyer", username: "buyer_demo" },
+  };
+  const res = createMockRes();
+
+  await productController.raiseComplaint(req, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.message, /after-sales request/i);
+});
+
 test("resolveComplaint records refund details when buyer wins", async (t) => {
   const originalFindByPkOrder = db.order.findByPk;
   const originalFindByPkProduct = db.product.findByPk;
@@ -1421,6 +1577,8 @@ test("resubmitProduct degrades AI service failures to manual review", async (t) 
   assert.equal(res.body.aiAssessment.serviceUnavailable, true);
   assert.equal(product.auditStatus, 0);
   assert.equal(product.auditReason, "AI service unavailable. Routed to manual review.");
+  assert.equal(product.ipfsHash, "QmNewReport");
+  assert.equal(product.qualificationHash, "QmNewCert");
   assert.equal(product.onChainId, 22);
   assert.ok(auditCalls.some((call) => call.action === "PRODUCT_RESUBMITTED"));
   assert.ok(

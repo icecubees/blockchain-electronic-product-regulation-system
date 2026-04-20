@@ -46,7 +46,7 @@ test("shows missing review items and submits structured reason codes", () => {
   expect(screen.getByText(/Serial number or IMEI/)).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "缺少设备唯一标识" }));
-  fireEvent.click(screen.getByRole("button", { name: "通过" }));
+  fireEvent.click(screen.getByRole("button", { name: "审核通过" }));
 
   expect(onProductReview).toHaveBeenCalledWith(
     8,

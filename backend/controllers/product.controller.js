@@ -17,6 +17,7 @@ const Order = db.order;
 const User = db.user;
 const AuditLog = db.auditLog;
 const AfterSalesRecord = db.afterSalesRecord;
+const AfterSalesRequest = db.afterSalesRequest;
 const RecallNotification = db.recallNotification;
 const Op = db.Sequelize.Op;
 
@@ -57,6 +58,19 @@ const AFTER_SALES_TYPE_OPTIONS = new Set([
   "repair",
   "component_replacement",
   "quality_refund",
+]);
+const DIRECT_COMPLAINT_TYPE_OPTIONS = new Set([
+  "battery_issue",
+  "counterfeit_suspected",
+  "refurbished_not_disclosed",
+  "serial_number_mismatch",
+  "safety_risk",
+]);
+const AFTER_SALES_REQUEST_STATUSES = new Set([
+  "pending_seller",
+  "seller_responded",
+  "escalated_to_complaint",
+  "closed",
 ]);
 const RECALL_NOTIFICATION_STATUSES = new Set(["pending", "viewed", "acknowledged", "closed"]);
 
@@ -113,6 +127,15 @@ function normalizeAfterSalesType(value, fallback = null) {
   }
 
   return AFTER_SALES_TYPE_OPTIONS.has(normalized) ? normalized : fallback;
+}
+
+function normalizeAfterSalesRequestStatus(value, fallback = null) {
+  const normalized = normalizeOptionalString(value, fallback);
+  if (!normalized) {
+    return normalized;
+  }
+
+  return AFTER_SALES_REQUEST_STATUSES.has(normalized) ? normalized : fallback;
 }
 
 function normalizeOptionalDate(value, fallback = null) {
@@ -1005,6 +1028,33 @@ function serializeAfterSalesRecord(record) {
   };
 }
 
+function serializeAfterSalesRequest(request) {
+  return {
+    id: request.id,
+    orderId: request.orderId,
+    productId: request.productId,
+    buyerId: request.buyerId,
+    type: request.type,
+    description: request.description,
+    evidenceIpfsHash: request.evidenceIpfsHash,
+    status: request.status,
+    sellerResponse: request.sellerResponse,
+    sellerEvidenceIpfsHash: request.sellerEvidenceIpfsHash,
+    sellerRespondedAt: request.sellerRespondedAt,
+    escalatedAt: request.escalatedAt,
+    escalatedBy: request.escalatedBy,
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+    buyer: request.buyer
+      ? {
+          id: request.buyer.id,
+          username: request.buyer.username,
+          role: request.buyer.role,
+        }
+      : null,
+  };
+}
+
 function serializeRecallNotification(notification) {
   return {
     id: notification.id,
@@ -1033,6 +1083,75 @@ function serializeRecallNotification(notification) {
         }
       : null,
   };
+}
+
+function canEnterComplaintFlow(order) {
+  return [0, 1, 2].includes(order.status);
+}
+
+async function findOrderAfterSalesRequest(orderId, buyerId) {
+  return AfterSalesRequest.findOne({
+    where: {
+      orderId,
+      buyerId,
+      status: {
+        [Op.in]: ["pending_seller", "seller_responded", "closed", "escalated_to_complaint"],
+      },
+    },
+    order: [["createdAt", "DESC"]],
+  });
+}
+
+async function openComplaintForOrder({
+  order,
+  buyer,
+  complaintType,
+  reason,
+  evidenceIpfsHash = null,
+  req,
+  auditDetails = {},
+}) {
+  const complaintText = evidenceIpfsHash
+    ? `[${complaintType}] ${reason} (Evidence: ipfs://${evidenceIpfsHash})`
+    : `[${complaintType}] ${reason}`;
+
+  const receipt = await sendContractTransaction({
+    account: accounts.market,
+    method: contract.methods.raiseComplaint(
+      getOrderChainId(order),
+      buyer.ethAddress,
+      complaintText
+    ),
+    gas: 600000,
+  });
+
+  order.status = 3;
+  order.complaintType = complaintType;
+  order.complaintReason = reason;
+  order.evidenceIpfsHash = evidenceIpfsHash || null;
+  order.refundStatus = "pending_review";
+  order.sellerResponse = null;
+  order.sellerEvidenceIpfsHash = null;
+  order.sellerRespondedAt = null;
+  await order.save();
+
+  await auditService.record({
+    operator: req.user,
+    action: "COMPLAINT_RAISED",
+    targetType: "ORDER",
+    targetId: order.id,
+    result: "SUCCESS",
+    details: {
+      complaintType,
+      evidenceIpfsHash: evidenceIpfsHash || null,
+      ...auditDetails,
+    },
+    req,
+    txHash: receipt.transactionHash,
+    ipfsHash: evidenceIpfsHash || null,
+  });
+
+  return receipt;
 }
 
 function getOrderChainId(order) {
@@ -1103,6 +1222,26 @@ function parseNumberQuery(value) {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function shouldUsePaginatedCollectionResponse(query = {}, keys = []) {
+  return keys.some((key) => query[key] !== undefined);
+}
+
+function sendCollectionResponse(res, items, { page, pageSize, total }, usePaginatedResponse) {
+  if (!usePaginatedResponse) {
+    return res.send(items);
+  }
+
+  return res.send({
+    items,
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(Math.ceil(total / pageSize), 1),
+    },
+  });
 }
 
 exports.getAllProducts = async (req, res) => {
@@ -1239,14 +1378,75 @@ exports.getAllProducts = async (req, res) => {
 
 exports.getPendingProducts = async (req, res) => {
   try {
-    const products = await Product.findAll({
-      where: { auditStatus: 0 },
-      include: [{ model: User, as: "seller", attributes: ["id", "username", "ethAddress"] }],
-      order: [["createdAt", "DESC"]],
+    const page = parseIntegerQuery(req.query.page, 1, { min: 1 });
+    const pageSize = parseIntegerQuery(req.query.pageSize || req.query.limit, 20, {
+      min: 1,
+      max: 100,
     });
-    res.send(products.map(attachReviewInsights));
+    const keyword = normalizeOptionalString(req.query.q, null);
+    const category = normalizeCategory(req.query.category, null);
+    const brand = normalizeOptionalString(req.query.brand, null);
+    const sellerId = parseIntegerQuery(req.query.sellerId, null, { min: 1 });
+    const usePaginatedResponse = shouldUsePaginatedCollectionResponse(req.query, [
+      "page",
+      "pageSize",
+      "limit",
+      "q",
+      "category",
+      "brand",
+      "sellerId",
+    ]);
+
+    const where = { auditStatus: 0 };
+    if (category) {
+      where.category = category;
+    }
+    if (brand) {
+      where.brand = { [Op.like]: `%${brand}%` };
+    }
+    if (keyword) {
+      where[Op.or] = [
+        { name: { [Op.like]: `%${keyword}%` } },
+        { description: { [Op.like]: `%${keyword}%` } },
+        { brand: { [Op.like]: `%${keyword}%` } },
+        { model: { [Op.like]: `%${keyword}%` } },
+        { serialNumber: { [Op.like]: `%${keyword}%` } },
+      ];
+    }
+
+    const sellerInclude = {
+      model: User,
+      as: "seller",
+      attributes: ["id", "username", "ethAddress"],
+    };
+    if (sellerId) {
+      sellerInclude.where = { id: sellerId };
+    }
+
+    const query = {
+      where,
+      include: [sellerInclude],
+      order: [["createdAt", "DESC"]],
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    };
+    const products = await Product.findAll(query);
+    const items = products.map(attachReviewInsights);
+
+    if (!usePaginatedResponse) {
+      return res.send(items);
+    }
+
+    const total = await Product.count({
+      where,
+      include: [sellerInclude.where ? { ...sellerInclude, attributes: [] } : sellerInclude],
+      distinct: true,
+      col: "id",
+    });
+
+    return sendCollectionResponse(res, items, { page, pageSize, total }, true);
   } catch (error) {
-    res.status(500).send({ message: error.message });
+    return res.status(500).send({ message: error.message });
   }
 };
 
@@ -2160,6 +2360,11 @@ exports.getMyOrders = async (req, res) => {
             include: [{ model: User, as: "creator", attributes: ["id", "username", "role"] }],
           },
           {
+            model: AfterSalesRequest,
+            as: "afterSalesRequests",
+            include: [{ model: User, as: "buyer", attributes: ["id", "username", "role"] }],
+          },
+          {
             model: RecallNotification,
             as: "recallNotifications",
           },
@@ -2183,6 +2388,11 @@ exports.getMyOrders = async (req, res) => {
             model: AfterSalesRecord,
             as: "afterSalesRecords",
             include: [{ model: User, as: "creator", attributes: ["id", "username", "role"] }],
+          },
+          {
+            model: AfterSalesRequest,
+            as: "afterSalesRequests",
+            include: [{ model: User, as: "buyer", attributes: ["id", "username", "role"] }],
           },
         ],
         order: [["createdAt", "DESC"]],
@@ -2333,6 +2543,226 @@ exports.getRecallNotificationSummary = async (req, res) => {
       acknowledged,
       closed,
     });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.createAfterSalesRequest = async (req, res) => {
+  try {
+    const { orderId, description, evidenceIpfsHash } = req.body;
+    const type = normalizeAfterSalesType(req.body.type, null);
+    const order = await Order.findByPk(orderId, {
+      include: [
+        {
+          model: Product,
+          as: "product",
+        },
+      ],
+    });
+
+    if (!order || !order.product) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+    if (order.buyerId !== req.userId) {
+      await auditService.recordAccessDenied(req, ["buyer(owner)"]);
+      return res.status(403).send({ message: "You can only request after-sales service for your own order" });
+    }
+    if (![0, 1, 2].includes(order.status)) {
+      return res.status(400).send({ message: "This order cannot open a new after-sales request" });
+    }
+    if (!type) {
+      return res.status(400).send({ message: "After-sales request type is required" });
+    }
+
+    const normalizedDescription = String(description || "").trim();
+    if (!normalizedDescription) {
+      return res.status(400).send({ message: "After-sales request description is required" });
+    }
+
+    const openRequest = await AfterSalesRequest.findOne({
+      where: {
+        orderId: order.id,
+        buyerId: req.userId,
+        status: {
+          [Op.in]: ["pending_seller", "seller_responded"],
+        },
+      },
+      order: [["createdAt", "DESC"]],
+    });
+    if (openRequest) {
+      return res.status(400).send({ message: "There is already an open after-sales request for this order" });
+    }
+
+    const request = await AfterSalesRequest.create({
+      orderId: order.id,
+      productId: order.productId,
+      buyerId: req.userId,
+      type,
+      description: normalizedDescription,
+      evidenceIpfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+      status: "pending_seller",
+    });
+
+    await auditService.record({
+      operator: req.user,
+      action: "AFTER_SALES_REQUEST_CREATED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      details: {
+        afterSalesRequestId: request.id,
+        type,
+        evidenceIpfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+      },
+      req,
+      ipfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+    });
+
+    const savedRequest = await AfterSalesRequest.findByPk(request.id, {
+      include: [{ model: User, as: "buyer", attributes: ["id", "username", "role"] }],
+    });
+
+    return res.send({
+      message: "After-sales request submitted successfully",
+      request: serializeAfterSalesRequest(savedRequest || request),
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.respondToAfterSalesRequest = async (req, res) => {
+  try {
+    const { requestId, response, evidenceIpfsHash } = req.body;
+    const request = await AfterSalesRequest.findByPk(requestId, {
+      include: [
+        {
+          model: Order,
+          as: "order",
+          include: [
+            {
+              model: Product,
+              as: "product",
+            },
+          ],
+        },
+        {
+          model: User,
+          as: "buyer",
+          attributes: ["id", "username", "role"],
+        },
+      ],
+    });
+
+    if (!request || !request.order || !request.order.product) {
+      return res.status(404).send({ message: "After-sales request not found" });
+    }
+    if (req.user.role !== "seller" || req.user.id !== request.order.product.sellerId) {
+      await auditService.recordAccessDenied(req, ["seller(owner)"]);
+      return res.status(403).send({ message: "You can only respond to after-sales requests for your own orders" });
+    }
+    if (request.status !== "pending_seller") {
+      return res.status(400).send({ message: "Only pending after-sales requests can be answered" });
+    }
+
+    const sellerResponse = String(response || "").trim();
+    if (!sellerResponse) {
+      return res.status(400).send({ message: "Seller after-sales response is required" });
+    }
+
+    request.sellerResponse = sellerResponse;
+    request.sellerEvidenceIpfsHash = normalizeOptionalString(evidenceIpfsHash, null);
+    request.sellerRespondedAt = new Date();
+    request.status = "seller_responded";
+    await request.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "AFTER_SALES_REQUEST_RESPONDED",
+      targetType: "ORDER",
+      targetId: request.orderId,
+      result: "SUCCESS",
+      details: {
+        afterSalesRequestId: request.id,
+        evidenceIpfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+      },
+      req,
+      ipfsHash: normalizeOptionalString(evidenceIpfsHash, null),
+    });
+
+    return res.send({
+      message: "After-sales request responded successfully",
+      request: serializeAfterSalesRequest(request),
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.escalateAfterSalesRequestToComplaint = async (req, res) => {
+  try {
+    const { requestId, complaintType, rulingDetails } = req.body;
+    const request = await AfterSalesRequest.findByPk(requestId, {
+      include: [
+        {
+          model: Order,
+          as: "order",
+        },
+        {
+          model: User,
+          as: "buyer",
+          attributes: ["id", "username", "role", "ethAddress"],
+        },
+      ],
+    });
+
+    if (!request || !request.order || !request.buyer) {
+      return res.status(404).send({ message: "After-sales request not found" });
+    }
+    if (request.order.status === 3) {
+      return res.status(400).send({ message: "This order is already in complaint flow" });
+    }
+
+    const normalizedComplaintType = normalizeComplaintType(complaintType, null);
+    if (!normalizedComplaintType) {
+      return res.status(400).send({ message: "Complaint type is required" });
+    }
+    if (!canEnterComplaintFlow(request.order)) {
+      return res.status(400).send({ message: "This order cannot be escalated to complaint flow" });
+    }
+
+    await openComplaintForOrder({
+      order: request.order,
+      buyer: request.buyer,
+      complaintType: normalizedComplaintType,
+      reason: rulingDetails || request.description,
+      evidenceIpfsHash: request.evidenceIpfsHash,
+      req,
+      auditDetails: {
+        escalatedFromAfterSalesRequestId: request.id,
+      },
+    });
+
+    request.status = "escalated_to_complaint";
+    request.escalatedAt = new Date();
+    request.escalatedBy = req.userId;
+    await request.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "AFTER_SALES_REQUEST_ESCALATED",
+      targetType: "ORDER",
+      targetId: request.orderId,
+      result: "SUCCESS",
+      details: {
+        afterSalesRequestId: request.id,
+        complaintType: normalizedComplaintType,
+      },
+      req,
+    });
+
+    return res.send({ message: "After-sales request escalated to complaint successfully" });
   } catch (error) {
     return res.status(500).send({ message: error.message });
   }
@@ -2630,50 +3060,29 @@ exports.raiseComplaint = async (req, res) => {
       await auditService.recordAccessDenied(req, ["buyer(owner)"]);
       return res.status(403).send({ message: "You can only complain about your own order" });
     }
-    if (order.status !== 0) {
-      return res.status(400).send({ message: "Only locked orders can enter complaint flow" });
-    }
     if (!complaintType) {
       return res.status(400).send({ message: "Complaint type is required" });
     }
+    if (!canEnterComplaintFlow(order)) {
+      return res.status(400).send({ message: "Only active, confirmed, or completed orders can enter complaint flow" });
+    }
 
-    const complaintText = evidenceIpfsHash
-      ? `[${complaintType}] ${reason} (Evidence: ipfs://${evidenceIpfsHash})`
-      : `[${complaintType}] ${reason}`;
+    if (!DIRECT_COMPLAINT_TYPE_OPTIONS.has(complaintType)) {
+      const afterSalesRequest = await findOrderAfterSalesRequest(order.id, buyer.id);
+      if (!afterSalesRequest) {
+        return res.status(400).send({
+          message: "Please submit an after-sales request before escalating this type of issue to complaint flow",
+        });
+      }
+    }
 
-    const receipt = await sendContractTransaction({
-      account: accounts.market,
-      method: contract.methods.raiseComplaint(
-        getOrderChainId(order),
-        buyer.ethAddress,
-        complaintText
-      ),
-      gas: 600000,
-    });
-
-    order.status = 3;
-    order.complaintType = complaintType;
-    order.complaintReason = reason;
-    order.evidenceIpfsHash = evidenceIpfsHash || null;
-    order.refundStatus = "pending_review";
-    order.sellerResponse = null;
-    order.sellerEvidenceIpfsHash = null;
-    order.sellerRespondedAt = null;
-    await order.save();
-
-    await auditService.record({
-      operator: req.user,
-      action: "COMPLAINT_RAISED",
-      targetType: "ORDER",
-      targetId: order.id,
-      result: "SUCCESS",
-      details: {
-        complaintType,
-        evidenceIpfsHash: evidenceIpfsHash || null,
-      },
+    await openComplaintForOrder({
+      order,
+      buyer,
+      complaintType,
+      reason,
+      evidenceIpfsHash,
       req,
-      txHash: receipt.transactionHash,
-      ipfsHash: evidenceIpfsHash || null,
     });
 
     res.send({ message: "Complaint submitted" });
@@ -2865,21 +3274,86 @@ exports.retryIntegrationJob = async (req, res) => {
 
 exports.getAllComplaints = async (req, res) => {
   try {
-    const complaints = await Order.findAll({
-      where: { status: 3 },
+    const page = parseIntegerQuery(req.query.page, 1, { min: 1 });
+    const pageSize = parseIntegerQuery(req.query.pageSize || req.query.limit, 20, {
+      min: 1,
+      max: 100,
+    });
+    const keyword = normalizeOptionalString(req.query.q, null);
+    const orderId = parseIntegerQuery(req.query.orderId, null, { min: 1 });
+    const buyerId = parseIntegerQuery(req.query.buyerId, null, { min: 1 });
+    const sellerId = parseIntegerQuery(req.query.sellerId, null, { min: 1 });
+    const complaintType = normalizeComplaintType(req.query.complaintType, null);
+    const hasSellerResponse = parseBooleanQuery(req.query.hasSellerResponse);
+    const usePaginatedResponse = shouldUsePaginatedCollectionResponse(req.query, [
+      "page",
+      "pageSize",
+      "limit",
+      "q",
+      "orderId",
+      "buyerId",
+      "sellerId",
+      "complaintType",
+      "hasSellerResponse",
+    ]);
+
+    const where = { status: 3 };
+    const andConditions = [];
+    if (orderId) {
+      where.id = orderId;
+    }
+    if (buyerId) {
+      where.buyerId = buyerId;
+    }
+    if (complaintType) {
+      where.complaintType = complaintType;
+    }
+    if (hasSellerResponse === true) {
+      andConditions.push({
+        sellerResponse: { [Op.ne]: null },
+      });
+    } else if (hasSellerResponse === false) {
+      andConditions.push({
+        [Op.or]: [{ sellerResponse: null }, { sellerResponse: "" }],
+      });
+    }
+    if (keyword) {
+      andConditions.push({
+        [Op.or]: [
+          { complaintReason: { [Op.like]: `%${keyword}%` } },
+          { sellerResponse: { [Op.like]: `%${keyword}%` } },
+          { rulingDetails: { [Op.like]: `%${keyword}%` } },
+        ],
+      });
+    }
+    if (andConditions.length > 0) {
+      where[Op.and] = andConditions;
+    }
+
+    const productInclude = {
+      model: Product,
+      as: "product",
       include: [
         {
-          model: Product,
-          as: "product",
-          include: [{ model: User, as: "seller", attributes: ["username", "id", "ethAddress"] }],
-        },
-        {
           model: User,
-          as: "buyer",
+          as: "seller",
           attributes: ["username", "id", "ethAddress"],
+          ...(sellerId ? { where: { id: sellerId } } : {}),
         },
       ],
+    };
+    const buyerInclude = {
+      model: User,
+      as: "buyer",
+      attributes: ["username", "id", "ethAddress"],
+    };
+
+    const complaints = await Order.findAll({
+      where,
+      include: [productInclude, buyerInclude],
       order: [["updatedAt", "DESC"]],
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
     });
 
     for (const complaint of complaints) {
@@ -2892,8 +3366,19 @@ exports.getAllComplaints = async (req, res) => {
       }
     }
 
-    res.send(complaints);
+    if (!usePaginatedResponse) {
+      return res.send(complaints);
+    }
+
+    const total = await Order.count({
+      where,
+      include: [productInclude, buyerInclude],
+      distinct: true,
+      col: "id",
+    });
+
+    return sendCollectionResponse(res, complaints, { page, pageSize, total }, true);
   } catch (error) {
-    res.status(500).send({ message: error.message });
+    return res.status(500).send({ message: error.message });
   }
 };

@@ -13,7 +13,9 @@ jest.mock("react-router-dom", () => ({
 
 jest.mock("../services/product.service", () => ({
   getMyOrders: jest.fn(),
+  createAfterSalesRequest: jest.fn(),
   raiseComplaint: jest.fn(),
+  respondToAfterSalesRequest: jest.fn(),
   recordAfterSales: jest.fn(),
   updateRecallNotificationStatus: jest.fn(),
 }));
@@ -32,7 +34,9 @@ beforeEach(() => {
   window.alert = jest.fn();
   FileService.uploadComplaintEvidence.mockResolvedValue({ data: { ipfsHash: "QmComplaint" } });
   FileService.uploadAfterSalesEvidence.mockResolvedValue({ data: { ipfsHash: "QmAfterSales" } });
+  ProductService.createAfterSalesRequest.mockResolvedValue({ data: { message: "ok" } });
   ProductService.raiseComplaint.mockResolvedValue({ data: { message: "ok" } });
+  ProductService.respondToAfterSalesRequest.mockResolvedValue({ data: { message: "ok" } });
   ProductService.recordAfterSales.mockResolvedValue({ data: { message: "ok" } });
   ProductService.updateRecallNotificationStatus.mockResolvedValue({ data: { message: "ok" } });
 });
@@ -58,7 +62,7 @@ test("buyer complaint flow submits structured complaint type", async () => {
     expect(ProductService.getMyOrders).toHaveBeenCalled();
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "发起投诉" }));
+  fireEvent.click(screen.getByRole("button", { name: "监管投诉" }));
   fireEvent.change(screen.getByLabelText("投诉类型"), {
     target: { value: "serial_number_mismatch" },
   });
@@ -74,6 +78,49 @@ test("buyer complaint flow submits structured complaint type", async () => {
       null,
       "serial_number_mismatch"
     );
+  });
+
+  expect(screen.queryByRole("option", { name: "性能问题" })).not.toBeInTheDocument();
+});
+
+test("buyer can submit an after-sales request", async () => {
+  AuthService.getCurrentUser.mockReturnValue({ id: 10, role: "buyer" });
+  ProductService.getMyOrders.mockResolvedValue({
+    data: [
+      {
+        id: 11,
+        product: { name: "Tablet Z", seller: { username: "seller_after_sales" } },
+        price: 2.1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        status: 2,
+        shippingStatus: "delivered",
+        afterSalesRequests: [],
+      },
+    ],
+  });
+
+  render(<OrderCenter />);
+
+  await waitFor(() => {
+    expect(ProductService.getMyOrders).toHaveBeenCalled();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "申请售后" }));
+  fireEvent.change(screen.getByLabelText("售后诉求"), {
+    target: { value: "quality_refund" },
+  });
+  fireEvent.change(screen.getByLabelText(/申请说明/i), {
+    target: { value: "The screen flickers after two days of normal use." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "提交售后申请" }));
+
+  await waitFor(() => {
+    expect(ProductService.createAfterSalesRequest).toHaveBeenCalledWith({
+      orderId: 11,
+      type: "quality_refund",
+      description: "The screen flickers after two days of normal use.",
+      evidenceIpfsHash: null,
+    });
   });
 });
 
@@ -126,6 +173,52 @@ test("seller can submit after-sales service records", async () => {
       serviceResult: "Battery replaced",
       evidenceIpfsHash: null,
     });
+  });
+});
+
+test("seller can respond to a buyer after-sales request", async () => {
+  AuthService.getCurrentUser.mockReturnValue({ id: 9, role: "seller" });
+  ProductService.getMyOrders.mockResolvedValue({
+    data: [
+      {
+        id: 12,
+        product: { name: "Camera Pro" },
+        buyer: { username: "buyer_request" },
+        price: 3.2,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        status: 2,
+        shippingStatus: "delivered",
+        afterSalesRequests: [
+          {
+            id: 121,
+            type: "repair",
+            description: "Lens motor gets stuck intermittently.",
+            status: "pending_seller",
+            createdAt: "2026-01-02T00:00:00.000Z",
+          },
+        ],
+        afterSalesRecords: [],
+      },
+    ],
+  });
+
+  render(<OrderCenter />);
+
+  await waitFor(() => {
+    expect(ProductService.getMyOrders).toHaveBeenCalled();
+  });
+
+  fireEvent.change(screen.getByPlaceholderText("说明维修方案、补偿方案或处理安排。"), {
+    target: { value: "We will inspect and replace the lens motor this week." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "提交售后响应" }));
+
+  await waitFor(() => {
+    expect(ProductService.respondToAfterSalesRequest).toHaveBeenCalledWith(
+      121,
+      "We will inspect and replace the lens motor this week.",
+      null
+    );
   });
 });
 

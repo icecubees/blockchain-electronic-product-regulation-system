@@ -21,6 +21,12 @@ module.exports = (app) => {
     [verifyToken, requireRoles("regulator", "admin")],
     auth.getPendingSellers
   );
+  router.get("/users", [verifyToken, requireRoles("regulator", "admin")], auth.getUsers);
+  router.patch(
+    "/users/:userId/status",
+    [verifyToken, requireRoles("regulator", "admin")],
+    auth.updateUserStatus
+  );
 
   app.use("/api/auth", router);
 };

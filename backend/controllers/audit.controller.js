@@ -1,9 +1,66 @@
 const db = require("../models");
 const { Op } = db.Sequelize;
 
+function normalizeStringQuery(value) {
+  const normalized = String(value || "").trim();
+  return normalized ? normalized : null;
+}
+
+function parsePositiveInteger(value, fallbackValue, max = 100) {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    return fallbackValue;
+  }
+
+  return Math.min(parsed, max);
+}
+
+function buildDateRange(dateFrom, dateTo) {
+  const from = normalizeStringQuery(dateFrom);
+  const to = normalizeStringQuery(dateTo);
+  if (!from && !to) {
+    return null;
+  }
+
+  const range = {};
+  if (from) {
+    const start = new Date(`${from}T00:00:00.000Z`);
+    if (!Number.isNaN(start.getTime())) {
+      range[Op.gte] = start;
+    }
+  }
+  if (to) {
+    const end = new Date(`${to}T23:59:59.999Z`);
+    if (!Number.isNaN(end.getTime())) {
+      range[Op.lte] = end;
+    }
+  }
+
+  return Object.getOwnPropertySymbols(range).length > 0 ? range : null;
+}
+
 exports.getAuditLogs = async (req, res) => {
   try {
     const where = {};
+    const keyword = normalizeStringQuery(req.query.keyword);
+    const operatorKeyword = normalizeStringQuery(req.query.operatorKeyword);
+    const targetId = normalizeStringQuery(req.query.targetId);
+    const createdAtRange = buildDateRange(req.query.dateFrom, req.query.dateTo);
+    const page = parsePositiveInteger(req.query.page, 1, 100000);
+    const pageSize = parsePositiveInteger(req.query.pageSize || req.query.limit, 20, 100);
+    const usePaginatedResponse = [
+      "page",
+      "pageSize",
+      "keyword",
+      "targetId",
+      "operatorKeyword",
+      "dateFrom",
+      "dateTo",
+      "targetType",
+      "action",
+      "result",
+      "operatorId",
+    ].some((key) => req.query[key] !== undefined);
 
     if (req.query.action) {
       where.action = req.query.action;
@@ -17,16 +74,65 @@ exports.getAuditLogs = async (req, res) => {
     if (req.query.targetType) {
       where.targetType = req.query.targetType;
     }
+    if (targetId) {
+      where.targetId = targetId;
+    }
+    if (createdAtRange) {
+      where.createdAt = createdAtRange;
+    }
 
-    const logs = await db.auditLog.findAll({
+    const andConditions = [];
+    if (operatorKeyword) {
+      andConditions.push({
+        [Op.or]: [
+          { operatorUsername: { [Op.like]: `%${operatorKeyword}%` } },
+          { operatorRole: { [Op.like]: `%${operatorKeyword}%` } },
+        ],
+      });
+    }
+    if (keyword) {
+      andConditions.push({
+        [Op.or]: [
+          { action: { [Op.like]: `%${keyword}%` } },
+          { targetType: { [Op.like]: `%${keyword}%` } },
+          { targetId: { [Op.like]: `%${keyword}%` } },
+          { operatorUsername: { [Op.like]: `%${keyword}%` } },
+          { operatorRole: { [Op.like]: `%${keyword}%` } },
+          { details: { [Op.like]: `%${keyword}%` } },
+          { txHash: { [Op.like]: `%${keyword}%` } },
+          { ipfsHash: { [Op.like]: `%${keyword}%` } },
+        ],
+      });
+    }
+    if (andConditions.length > 0) {
+      where[Op.and] = andConditions;
+    }
+
+    const query = {
       where,
       order: [["createdAt", "DESC"]],
-      limit: Math.min(parseInt(req.query.limit || "100", 10), 200),
-    });
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    };
+    const logs = await db.auditLog.findAll(query);
 
-    res.send(logs);
+    if (!usePaginatedResponse) {
+      return res.send(logs);
+    }
+
+    const total = await db.auditLog.count({ where });
+
+    return res.send({
+      items: logs,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(Math.ceil(total / pageSize), 1),
+      },
+    });
   } catch (error) {
-    res.status(500).send({ message: error.message });
+    return res.status(500).send({ message: error.message });
   }
 };
 

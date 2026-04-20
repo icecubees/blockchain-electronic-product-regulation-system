@@ -38,7 +38,9 @@ jest.mock("../services/auth.service", () => ({
   getCurrentUser: jest.fn(),
   getPendingSellers: jest.fn(),
   getBlacklistedSellers: jest.fn(),
+  getUsers: jest.fn(),
   approveSeller: jest.fn(),
+  updateUserStatus: jest.fn(),
   unblacklistSeller: jest.fn(),
   logout: jest.fn(),
 }));
@@ -55,6 +57,7 @@ jest.mock("../components/RegulatorReviewQueues", () => () => <div>Review queues<
 beforeEach(() => {
   jest.clearAllMocks();
   window.alert = jest.fn();
+  window.prompt = jest.fn();
   AuthService.getCurrentUser.mockReturnValue({
     id: 1,
     role: "regulator",
@@ -85,9 +88,49 @@ beforeEach(() => {
   ProductService.delistProduct.mockResolvedValue({ data: { message: "ok" } });
   AuthService.getPendingSellers.mockResolvedValue({ data: [] });
   AuthService.getBlacklistedSellers.mockResolvedValue({ data: [] });
+  AuthService.getUsers.mockResolvedValue({
+    data: {
+      items: [],
+      pagination: { page: 1, pageSize: 10, total: 0, totalPages: 1 },
+    },
+  });
   AuditLogService.getAuditLogs.mockResolvedValue({ data: [] });
   AuditLogService.getAuditStats.mockResolvedValue({
     data: { summary: {}, trends: [], complaintTypeBreakdown: [] },
+  });
+});
+
+test("regulator can freeze a manageable user from governance panel", async () => {
+  AuthService.getUsers.mockResolvedValue({
+    data: {
+      items: [
+        {
+          id: 22,
+          username: "buyer_demo",
+          role: "buyer",
+          status: 1,
+          ethAddress: "0xabc",
+          canManage: true,
+        },
+      ],
+      pagination: { page: 1, pageSize: 10, total: 1, totalPages: 1 },
+    },
+  });
+  window.prompt.mockReturnValue("Risky abusive behavior");
+
+  render(<Home />);
+
+  expect(await screen.findByText("用户治理")).toBeInTheDocument();
+  expect(await screen.findByText(/buyer_demo/)).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "冻结" }));
+
+  await waitFor(() => {
+    expect(AuthService.updateUserStatus).toHaveBeenCalledWith(
+      22,
+      2,
+      "Risky abusive behavior"
+    );
   });
 });
 

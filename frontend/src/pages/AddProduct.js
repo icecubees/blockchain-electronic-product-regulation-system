@@ -119,8 +119,8 @@ const AddProduct = () => {
         navigate("/my-products");
       }, 1200);
     } catch (error) {
-      const resMessage = error.response?.data?.message || error.message;
-      setMessage(`提交失败：${resMessage}`);
+      const responseMessage = error.response?.data?.message || error.message;
+      setMessage(`提交失败：${responseMessage}`);
     } finally {
       setLoading(false);
     }

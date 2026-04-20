@@ -12,15 +12,25 @@ const authHeader = () => {
   return {};
 };
 
-const getAuditLogs = (limit = 50) =>
-  axios.get(`${API_URL}?limit=${limit}`, {
-    headers: authHeader(),
-  });
+const getAuditLogs = (paramsOrLimit = { limit: 50 }) => {
+  const params =
+    typeof paramsOrLimit === "number" ? { limit: paramsOrLimit } : { ...paramsOrLimit };
 
-const getAuditStats = (days = 7) =>
-  axios.get(`${API_URL}stats?days=${days}`, {
+  return axios.get(API_URL, {
     headers: authHeader(),
+    params,
   });
+};
+
+const getAuditStats = (daysOrParams = 7) => {
+  const params =
+    typeof daysOrParams === "number" ? { days: daysOrParams } : { ...daysOrParams };
+
+  return axios.get(`${API_URL}stats`, {
+    headers: authHeader(),
+    params,
+  });
+};
 
 const AuditLogService = {
   getAuditLogs,

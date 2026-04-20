@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import ProductService from "../services/product.service";
 import AuthService from "../services/auth.service";
+import FileService from "../services/file.service";
 
 const CATEGORY_OPTIONS = [
   { value: "mobile_phone", label: "手机" },
@@ -95,6 +96,11 @@ export default function MyProducts() {
   const [delistReasons, setDelistReasons] = useState({});
   const [editingProduct, setEditingProduct] = useState(null);
   const [resubmitForm, setResubmitForm] = useState(INITIAL_RESUBMIT_FORM);
+  const [resubmitFiles, setResubmitFiles] = useState({
+    reportFile: null,
+    qualificationFile: null,
+  });
+  const [showAdvancedHashes, setShowAdvancedHashes] = useState(false);
 
   const navigate = useNavigate();
 
@@ -170,6 +176,11 @@ export default function MyProducts() {
 
   const openResubmit = (product) => {
     setEditingProduct(product);
+    setResubmitFiles({
+      reportFile: null,
+      qualificationFile: null,
+    });
+    setShowAdvancedHashes(false);
     setResubmitForm({
       name: product.name || "",
       brand: product.brand || "",
@@ -208,16 +219,38 @@ export default function MyProducts() {
   const handleResubmit = async () => {
     if (!editingProduct) return;
 
-    const payload = {
-      productId: editingProduct.id,
-      ...resubmitForm,
-    };
-
     setLoading(true);
     try {
+      let nextIpfsHash = resubmitForm.ipfsHash;
+      let nextQualificationHash = resubmitForm.qualificationHash;
+
+      if (resubmitFiles.reportFile) {
+        const uploadResponse = await FileService.uploadProductReport(resubmitFiles.reportFile);
+        nextIpfsHash = uploadResponse.data.ipfsHash;
+      }
+
+      if (resubmitFiles.qualificationFile) {
+        const uploadResponse = await FileService.uploadProductCertificate(
+          resubmitFiles.qualificationFile
+        );
+        nextQualificationHash = uploadResponse.data.ipfsHash;
+      }
+
+      const payload = {
+        productId: editingProduct.id,
+        ...resubmitForm,
+        ipfsHash: nextIpfsHash,
+        qualificationHash: nextQualificationHash,
+      };
+
       const response = await ProductService.resubmitProduct(payload);
       window.alert(response.data?.message || "商品重新提交成功。");
       setEditingProduct(null);
+      setResubmitFiles({
+        reportFile: null,
+        qualificationFile: null,
+      });
+      setShowAdvancedHashes(false);
       loadMyProducts();
     } catch (err) {
       window.alert(`重新提交失败：${err.response?.data?.message || err.message}`);
@@ -681,28 +714,102 @@ export default function MyProducts() {
               />
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-sm text-gray-600">检测报告 IPFS 哈希</label>
-                <input
-                  value={resubmitForm.ipfsHash}
-                  onChange={(event) => updateResubmitForm("ipfsHash", event.target.value)}
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                />
+            <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-indigo-900">重新上传合规文件</div>
+                  <div className="mt-1 text-xs text-indigo-700">
+                    推荐直接上传新的检测报告和资质文件，系统会自动替换 IPFS 哈希。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedHashes((prev) => !prev)}
+                  className="rounded border border-indigo-200 bg-white px-3 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                >
+                  {showAdvancedHashes ? "隐藏高级哈希选项" : "显示高级哈希选项"}
+                </button>
               </div>
-              <div>
-                <label className="mb-1 block text-sm text-gray-600">资质材料 IPFS 哈希</label>
-                <input
-                  value={resubmitForm.qualificationHash}
-                  onChange={(event) => updateResubmitForm("qualificationHash", event.target.value)}
-                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
-                />
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm text-gray-600">重新上传检测报告（PDF）</label>
+                  <input
+                    aria-label="重新上传检测报告"
+                    type="file"
+                    accept="application/pdf"
+                    onChange={(event) =>
+                      setResubmitFiles((prev) => ({
+                        ...prev,
+                        reportFile: event.target.files?.[0] || null,
+                      }))
+                    }
+                    className="block w-full text-sm text-slate-500 file:mr-4 file:rounded file:border-0 file:bg-indigo-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-indigo-700 hover:file:bg-indigo-200"
+                  />
+                  <div className="mt-2 text-xs text-gray-500">
+                    {resubmitFiles.reportFile
+                      ? `待上传文件：${resubmitFiles.reportFile.name}`
+                      : `当前哈希：${resubmitForm.ipfsHash || "未提供"}`}
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-gray-600">重新上传资质文件（PDF）</label>
+                  <input
+                    aria-label="重新上传资质文件"
+                    type="file"
+                    accept="application/pdf"
+                    onChange={(event) =>
+                      setResubmitFiles((prev) => ({
+                        ...prev,
+                        qualificationFile: event.target.files?.[0] || null,
+                      }))
+                    }
+                    className="block w-full text-sm text-slate-500 file:mr-4 file:rounded file:border-0 file:bg-indigo-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-indigo-700 hover:file:bg-indigo-200"
+                  />
+                  <div className="mt-2 text-xs text-gray-500">
+                    {resubmitFiles.qualificationFile
+                      ? `待上传文件：${resubmitFiles.qualificationFile.name}`
+                      : `当前哈希：${resubmitForm.qualificationHash || "未提供"}`}
+                  </div>
+                </div>
               </div>
+
+              {showAdvancedHashes ? (
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm text-gray-600">高级选项：检测报告 IPFS 哈希</label>
+                    <input
+                      value={resubmitForm.ipfsHash}
+                      onChange={(event) => updateResubmitForm("ipfsHash", event.target.value)}
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm text-gray-600">高级选项：资质材料 IPFS 哈希</label>
+                    <input
+                      value={resubmitForm.qualificationHash}
+                      onChange={(event) => updateResubmitForm("qualificationHash", event.target.value)}
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              未重新上传的文件会继续沿用当前 IPFS 哈希，确保旧的重提接口仍然兼容。
             </div>
 
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => setEditingProduct(null)}
+                onClick={() => {
+                  setEditingProduct(null);
+                  setResubmitFiles({
+                    reportFile: null,
+                    qualificationFile: null,
+                  });
+                  setShowAdvancedHashes(false);
+                }}
                 className="rounded border border-gray-300 px-4 py-2 text-gray-700 hover:bg-gray-50"
               >
                 取消

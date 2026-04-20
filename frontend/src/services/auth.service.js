@@ -50,8 +50,20 @@ const getBlacklistedSellers = () => {
   return axios.get(API_URL + "blacklisted-sellers", { headers: authHeader() });
 };
 
+const getUsers = (params = {}) => {
+  return axios.get(API_URL + "users", { headers: authHeader(), params });
+};
+
 const approveSeller = (sellerId, action, reason) => {
   return axios.post(API_URL + "approve", { sellerId, action, reason }, { headers: authHeader() });
+};
+
+const updateUserStatus = (userId, status, reason = "") => {
+  return axios.patch(
+    API_URL + `users/${userId}/status`,
+    { status, reason },
+    { headers: authHeader() }
+  );
 };
 
 const unblacklistSeller = (sellerId, reason, restoredScore) => {
@@ -69,7 +81,9 @@ const AuthService = {
   getCurrentUser,
   getPendingSellers,
   getBlacklistedSellers,
+  getUsers,
   approveSeller,
+  updateUserStatus,
   unblacklistSeller,
 };
 

@@ -10,6 +10,7 @@ import Dashboard from "../components/Dashboard";
 import RegulatorReviewQueues from "../components/RegulatorReviewQueues";
 
 const PAGE_SIZE = 8;
+const REGULATOR_PAGE_SIZE = 10;
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
 
 const CATEGORY_OPTIONS = [
@@ -54,6 +55,69 @@ const INITIAL_DELIST_MODAL = {
 const INITIAL_PURCHASE_MODAL = {
   product: null,
 };
+
+const INITIAL_PENDING_PRODUCT_FILTERS = {
+  q: "",
+  category: "",
+  brand: "",
+  sellerId: "",
+};
+
+const INITIAL_COMPLAINT_FILTERS = {
+  q: "",
+  orderId: "",
+  complaintType: "",
+  sellerId: "",
+  buyerId: "",
+  hasSellerResponse: "",
+};
+
+const INITIAL_AUDIT_LOG_FILTERS = {
+  keyword: "",
+  action: "",
+  result: "",
+  targetType: "",
+  targetId: "",
+  operatorKeyword: "",
+  dateFrom: "",
+  dateTo: "",
+  page: 1,
+  pageSize: REGULATOR_PAGE_SIZE,
+};
+
+const INITIAL_USER_FILTERS = {
+  q: "",
+  role: "",
+  status: "",
+  page: 1,
+  pageSize: REGULATOR_PAGE_SIZE,
+};
+
+const COMPLAINT_TYPE_OPTIONS = [
+  { value: "", label: "全部投诉类型" },
+  { value: "battery_issue", label: "电池问题" },
+  { value: "counterfeit_suspected", label: "疑似假货" },
+  { value: "refurbished_not_disclosed", label: "翻新未披露" },
+  { value: "serial_number_mismatch", label: "序列号不一致" },
+  { value: "performance_issue", label: "性能问题" },
+  { value: "accessory_mismatch", label: "配件不符" },
+  { value: "safety_risk", label: "安全风险" },
+];
+
+const USER_ROLE_OPTIONS = [
+  { value: "", label: "全部角色" },
+  { value: "buyer", label: "买家" },
+  { value: "seller", label: "卖家" },
+  { value: "regulator", label: "监管员" },
+  { value: "admin", label: "管理员" },
+];
+
+const USER_STATUS_OPTIONS = [
+  { value: "", label: "全部状态" },
+  { value: "0", label: "待审核" },
+  { value: "1", label: "正常" },
+  { value: "2", label: "已冻结" },
+];
 
 function isRegulatorUser(user) {
   return user?.role === "regulator" || user?.role === "admin";
@@ -150,7 +214,32 @@ export default function Home() {
   const [complaints, setComplaints] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [dashboardStats, setDashboardStats] = useState(null);
+  const [managedUsers, setManagedUsers] = useState([]);
+  const [pendingProductFilters, setPendingProductFilters] = useState(INITIAL_PENDING_PRODUCT_FILTERS);
+  const [appliedPendingProductFilters, setAppliedPendingProductFilters] = useState(
+    INITIAL_PENDING_PRODUCT_FILTERS
+  );
+  const [complaintFilters, setComplaintFilters] = useState(INITIAL_COMPLAINT_FILTERS);
+  const [appliedComplaintFilters, setAppliedComplaintFilters] = useState(INITIAL_COMPLAINT_FILTERS);
+  const [auditLogFilters, setAuditLogFilters] = useState(INITIAL_AUDIT_LOG_FILTERS);
+  const [appliedAuditLogFilters, setAppliedAuditLogFilters] = useState(INITIAL_AUDIT_LOG_FILTERS);
+  const [userFilters, setUserFilters] = useState(INITIAL_USER_FILTERS);
+  const [appliedUserFilters, setAppliedUserFilters] = useState(INITIAL_USER_FILTERS);
+  const [auditLogPagination, setAuditLogPagination] = useState({
+    page: 1,
+    pageSize: REGULATOR_PAGE_SIZE,
+    total: 0,
+    totalPages: 1,
+  });
+  const [userPagination, setUserPagination] = useState({
+    page: 1,
+    pageSize: REGULATOR_PAGE_SIZE,
+    total: 0,
+    totalPages: 1,
+  });
   const [marketLoading, setMarketLoading] = useState(false);
+  const [auditLogLoading, setAuditLogLoading] = useState(false);
+  const [userLoading, setUserLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState(INITIAL_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState(INITIAL_FILTERS);
@@ -195,6 +284,19 @@ export default function Home() {
     return params;
   };
 
+  const buildQueryParams = (source) => {
+    const params = {};
+
+    Object.entries(source).forEach(([key, value]) => {
+      if (value === "" || value === null || value === undefined) {
+        return;
+      }
+      params[key] = value;
+    });
+
+    return params;
+  };
+
   const loadMarketProducts = async (page = 1, nextFilters = appliedFilters) => {
     setMarketLoading(true);
     try {
@@ -217,13 +319,16 @@ export default function Home() {
     }
   };
 
-  const loadPendingProducts = async (user = currentUser) => {
+  const loadPendingProducts = async (
+    user = currentUser,
+    nextFilters = appliedPendingProductFilters
+  ) => {
     if (!isRegulatorUser(user)) {
       return;
     }
 
     try {
-      const response = await ProductService.getPendingProducts();
+      const response = await ProductService.getPendingProducts(buildQueryParams(nextFilters));
       setPendingProducts(normalizeListResponse(response));
     } catch (error) {
       console.error(error);
@@ -256,29 +361,66 @@ export default function Home() {
     }
   };
 
-  const loadComplaints = async (user = currentUser) => {
+  const loadManagedUsers = async (user = currentUser, nextFilters = appliedUserFilters) => {
+    if (!isRegulatorUser(user)) {
+      return;
+    }
+
+    setUserLoading(true);
+    try {
+      const response = await AuthService.getUsers(buildQueryParams(nextFilters));
+      const items = normalizeListResponse(response);
+      const pagination = getPagination(response, nextFilters.page || 1);
+
+      setManagedUsers(items);
+      setUserPagination({
+        page: pagination.page,
+        pageSize: pagination.pageSize || nextFilters.pageSize || REGULATOR_PAGE_SIZE,
+        total: pagination.total || items.length,
+        totalPages: pagination.totalPages || 1,
+      });
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setUserLoading(false);
+    }
+  };
+
+  const loadComplaints = async (user = currentUser, nextFilters = appliedComplaintFilters) => {
     if (!isRegulatorUser(user)) {
       return;
     }
 
     try {
-      const response = await ProductService.getAllComplaints();
+      const response = await ProductService.getAllComplaints(buildQueryParams(nextFilters));
       setComplaints(normalizeListResponse(response));
     } catch (error) {
       console.error(error);
     }
   };
 
-  const loadAuditLogs = async (user = currentUser) => {
+  const loadAuditLogs = async (user = currentUser, nextFilters = appliedAuditLogFilters) => {
     if (!isRegulatorUser(user)) {
       return;
     }
 
+    setAuditLogLoading(true);
     try {
-      const response = await AuditLogService.getAuditLogs();
-      setAuditLogs(normalizeListResponse(response));
+      const response = await AuditLogService.getAuditLogs(buildQueryParams(nextFilters));
+      const items = normalizeListResponse(response);
+      const pagination = getPagination(response, nextFilters.page || 1);
+
+      setAuditLogs(items);
+      setAuditLogPagination({
+        page: pagination.page,
+        pageSize: pagination.pageSize || nextFilters.pageSize || REGULATOR_PAGE_SIZE,
+        total: pagination.total || items.length,
+        totalPages: pagination.totalPages || 1,
+      });
     } catch (error) {
       console.error(error);
+    } finally {
+      setAuditLogLoading(false);
     }
   };
 
@@ -301,11 +443,12 @@ export default function Home() {
     }
 
     await Promise.all([
-      loadPendingProducts(user),
+      loadPendingProducts(user, appliedPendingProductFilters),
       loadPendingSellers(user),
       loadBlacklistedSellers(user),
-      loadComplaints(user),
-      loadAuditLogs(user),
+      loadManagedUsers(user, appliedUserFilters),
+      loadComplaints(user, appliedComplaintFilters),
+      loadAuditLogs(user, appliedAuditLogFilters),
       loadAuditStats(user),
     ]);
   };
@@ -326,6 +469,22 @@ export default function Home() {
     setFilters((previous) => ({ ...previous, [key]: value }));
   };
 
+  const handlePendingProductFilterChange = (key, value) => {
+    setPendingProductFilters((previous) => ({ ...previous, [key]: value }));
+  };
+
+  const handleComplaintFilterChange = (key, value) => {
+    setComplaintFilters((previous) => ({ ...previous, [key]: value }));
+  };
+
+  const handleAuditLogFilterChange = (key, value) => {
+    setAuditLogFilters((previous) => ({ ...previous, [key]: value }));
+  };
+
+  const handleUserFilterChange = (key, value) => {
+    setUserFilters((previous) => ({ ...previous, [key]: value }));
+  };
+
   const applyFilters = async () => {
     const nextFilters = { ...filters };
     setAppliedFilters(nextFilters);
@@ -336,6 +495,72 @@ export default function Home() {
     setFilters(INITIAL_FILTERS);
     setAppliedFilters(INITIAL_FILTERS);
     await loadMarketProducts(1, INITIAL_FILTERS);
+  };
+
+  const applyPendingProductFilters = async () => {
+    const nextFilters = { ...pendingProductFilters };
+    setAppliedPendingProductFilters(nextFilters);
+    await loadPendingProducts(currentUser, nextFilters);
+  };
+
+  const resetPendingProductFilters = async () => {
+    setPendingProductFilters(INITIAL_PENDING_PRODUCT_FILTERS);
+    setAppliedPendingProductFilters(INITIAL_PENDING_PRODUCT_FILTERS);
+    await loadPendingProducts(currentUser, INITIAL_PENDING_PRODUCT_FILTERS);
+  };
+
+  const applyComplaintFilters = async () => {
+    const nextFilters = { ...complaintFilters };
+    setAppliedComplaintFilters(nextFilters);
+    await loadComplaints(currentUser, nextFilters);
+  };
+
+  const resetComplaintFilters = async () => {
+    setComplaintFilters(INITIAL_COMPLAINT_FILTERS);
+    setAppliedComplaintFilters(INITIAL_COMPLAINT_FILTERS);
+    await loadComplaints(currentUser, INITIAL_COMPLAINT_FILTERS);
+  };
+
+  const applyAuditLogFilters = async (override = {}) => {
+    const nextFilters = {
+      ...auditLogFilters,
+      ...override,
+    };
+    setAuditLogFilters(nextFilters);
+    setAppliedAuditLogFilters(nextFilters);
+    await loadAuditLogs(currentUser, nextFilters);
+  };
+
+  const resetAuditLogFilters = async () => {
+    setAuditLogFilters(INITIAL_AUDIT_LOG_FILTERS);
+    setAppliedAuditLogFilters(INITIAL_AUDIT_LOG_FILTERS);
+    await loadAuditLogs(currentUser, INITIAL_AUDIT_LOG_FILTERS);
+  };
+
+  const gotoAuditLogPage = async (page) => {
+    const targetPage = Math.min(Math.max(page, 1), Math.max(auditLogPagination.totalPages, 1));
+    await applyAuditLogFilters({ page: targetPage });
+  };
+
+  const applyUserFilters = async (override = {}) => {
+    const nextFilters = {
+      ...userFilters,
+      ...override,
+    };
+    setUserFilters(nextFilters);
+    setAppliedUserFilters(nextFilters);
+    await loadManagedUsers(currentUser, nextFilters);
+  };
+
+  const resetUserFilters = async () => {
+    setUserFilters(INITIAL_USER_FILTERS);
+    setAppliedUserFilters(INITIAL_USER_FILTERS);
+    await loadManagedUsers(currentUser, INITIAL_USER_FILTERS);
+  };
+
+  const gotoUserPage = async (page) => {
+    const targetPage = Math.min(Math.max(page, 1), Math.max(userPagination.totalPages, 1));
+    await applyUserFilters({ page: targetPage });
   };
 
   const handlePurchase = async (productId) => {
@@ -451,6 +676,33 @@ export default function Home() {
     }
   };
 
+  const handleUpdateUserStatus = async (user, nextStatus) => {
+    const isFreezing = nextStatus === 2;
+    const reason = window.prompt(
+      isFreezing ? "请输入冻结原因" : "请输入解冻备注（可选）",
+      user?.frozenReason || ""
+    );
+
+    if (reason === null) {
+      return;
+    }
+    if (isFreezing && !String(reason).trim()) {
+      window.alert("冻结用户时必须填写原因。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await AuthService.updateUserStatus(user.id, nextStatus, reason);
+      window.alert(nextStatus === 2 ? "用户已冻结。" : "用户已恢复正常。");
+      await reloadRegulatorData();
+    } catch (error) {
+      window.alert(`用户状态更新失败：${getErrorMessage(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const openPurchaseModal = (product) => setPurchaseModal({ product });
   const openDelistModal = (product) =>
     setDelistModal({
@@ -558,6 +810,14 @@ export default function Home() {
               complaints={complaints}
               auditLogs={auditLogs}
               stats={dashboardStats}
+              auditLogFilters={auditLogFilters}
+              appliedAuditLogFilters={appliedAuditLogFilters}
+              auditLogPagination={auditLogPagination}
+              auditLogLoading={auditLogLoading}
+              onAuditLogFilterChange={handleAuditLogFilterChange}
+              onAuditLogSearch={applyAuditLogFilters}
+              onAuditLogReset={resetAuditLogFilters}
+              onAuditLogPageChange={gotoAuditLogPage}
             />
 
             <section className="rounded-3xl bg-white p-6 shadow">
@@ -565,6 +825,69 @@ export default function Home() {
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">投诉处理区</h2>
                   <p className="mt-1 text-sm text-slate-500">集中处理买家投诉、卖家答辩与监管裁决。</p>
+                </div>
+              </div>
+
+              <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-3 xl:grid-cols-6">
+                <input
+                  value={complaintFilters.q}
+                  onChange={(event) => handleComplaintFilterChange("q", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="搜索投诉原因或答辩"
+                />
+                <input
+                  value={complaintFilters.orderId}
+                  onChange={(event) => handleComplaintFilterChange("orderId", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="订单 ID"
+                />
+                <select
+                  value={complaintFilters.complaintType}
+                  onChange={(event) => handleComplaintFilterChange("complaintType", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  {COMPLAINT_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value || "all"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={complaintFilters.sellerId}
+                  onChange={(event) => handleComplaintFilterChange("sellerId", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="卖家 ID"
+                />
+                <input
+                  value={complaintFilters.buyerId}
+                  onChange={(event) => handleComplaintFilterChange("buyerId", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="买家 ID"
+                />
+                <select
+                  value={complaintFilters.hasSellerResponse}
+                  onChange={(event) =>
+                    handleComplaintFilterChange("hasSellerResponse", event.target.value)
+                  }
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  <option value="">卖家答辩状态</option>
+                  <option value="true">已有答辩</option>
+                  <option value="false">暂无答辩</option>
+                </select>
+                <div className="flex gap-3 xl:col-span-6">
+                  <button
+                    onClick={applyComplaintFilters}
+                    className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  >
+                    查询投诉
+                  </button>
+                  <button
+                    onClick={resetComplaintFilters}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    重置
+                  </button>
                 </div>
               </div>
 
@@ -664,21 +987,206 @@ export default function Home() {
               )}
             </section>
 
-            <RegulatorReviewQueues
-              pendingProducts={pendingProducts}
-              pendingSellers={pendingSellers}
-              loading={loading}
-              onSellerReview={handleSellerReview}
-              onProductReview={handleProductReview}
-              onForceDelist={openDelistModal}
-              onRecall={handleRecall}
-            />
+            <section className="rounded-3xl bg-white p-6 shadow">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">待审核商品筛查</h2>
+                  <p className="mt-1 text-sm text-slate-500">先筛选，再进入审核队列处理。</p>
+                </div>
+              </div>
+
+              <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-4">
+                <input
+                  value={pendingProductFilters.q}
+                  onChange={(event) => handlePendingProductFilterChange("q", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="搜索商品名称/描述/型号"
+                />
+                <select
+                  value={pendingProductFilters.category}
+                  onChange={(event) =>
+                    handlePendingProductFilterChange("category", event.target.value)
+                  }
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  {CATEGORY_OPTIONS.map((option) => (
+                    <option key={option.value || "all"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={pendingProductFilters.brand}
+                  onChange={(event) => handlePendingProductFilterChange("brand", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="品牌"
+                />
+                <input
+                  value={pendingProductFilters.sellerId}
+                  onChange={(event) =>
+                    handlePendingProductFilterChange("sellerId", event.target.value)
+                  }
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="卖家 ID"
+                />
+                <div className="flex gap-3 xl:col-span-4">
+                  <button
+                    onClick={applyPendingProductFilters}
+                    className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  >
+                    查询待审核商品
+                  </button>
+                  <button
+                    onClick={resetPendingProductFilters}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    重置
+                  </button>
+                </div>
+              </div>
+
+              <RegulatorReviewQueues
+                pendingProducts={pendingProducts}
+                pendingSellers={pendingSellers}
+                loading={loading}
+                onSellerReview={handleSellerReview}
+                onProductReview={handleProductReview}
+                onForceDelist={openDelistModal}
+                onRecall={handleRecall}
+              />
+            </section>
 
             <BlacklistSellerManager
               sellers={blacklistedSellers}
               loading={loading}
               onRestore={handleRestoreSeller}
             />
+
+            <section className="rounded-3xl bg-white p-6 shadow">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">用户治理</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    管理员可治理买家、卖家与监管员；监管员仅可治理买家和卖家。
+                  </p>
+                </div>
+              </div>
+
+              <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-4">
+                <input
+                  value={userFilters.q}
+                  onChange={(event) => handleUserFilterChange("q", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="搜索用户名或钱包地址"
+                />
+                <select
+                  value={userFilters.role}
+                  onChange={(event) => handleUserFilterChange("role", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  {USER_ROLE_OPTIONS.map((option) => (
+                    <option key={option.value || "all"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={userFilters.status}
+                  onChange={(event) => handleUserFilterChange("status", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  {USER_STATUS_OPTIONS.map((option) => (
+                    <option key={option.value || "all"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex gap-3 xl:col-span-1">
+                  <button
+                    onClick={() => applyUserFilters({ page: 1 })}
+                    className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  >
+                    查询用户
+                  </button>
+                  <button
+                    onClick={resetUserFilters}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    重置
+                  </button>
+                </div>
+              </div>
+
+              {userLoading ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                  用户列表加载中...
+                </div>
+              ) : managedUsers.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                  当前筛选条件下暂无用户。
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {managedUsers.map((user) => (
+                    <div
+                      key={user.id}
+                      className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div className="space-y-1 text-sm text-slate-700">
+                          <div className="text-base font-semibold text-slate-900">
+                            {user.username} #{user.id}
+                          </div>
+                          <div>角色：{USER_ROLE_OPTIONS.find((option) => option.value === user.role)?.label || user.role}</div>
+                          <div>状态：{USER_STATUS_OPTIONS.find((option) => option.value === String(user.status))?.label || user.status}</div>
+                          <div>钱包：{user.ethAddress || "未分配"}</div>
+                          {user.frozenReason && <div>冻结原因：{user.frozenReason}</div>}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => handleUpdateUserStatus(user, 2)}
+                            disabled={loading || !user.canManage || user.status === 2}
+                            className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                          >
+                            冻结
+                          </button>
+                          <button
+                            onClick={() => handleUpdateUserStatus(user, 1)}
+                            disabled={loading || !user.canManage || user.status === 1}
+                            className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                          >
+                            解冻
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+                <div>
+                  第 {userPagination.page} / {Math.max(userPagination.totalPages, 1)} 页，共{" "}
+                  {userPagination.total} 个用户
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => gotoUserPage(userPagination.page - 1)}
+                    disabled={userPagination.page <= 1 || userLoading}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 disabled:opacity-50"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => gotoUserPage(userPagination.page + 1)}
+                    disabled={userPagination.page >= userPagination.totalPages || userLoading}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 disabled:opacity-50"
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            </section>
           </>
         )}
 

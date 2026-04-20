@@ -5,6 +5,7 @@ test("renders empty blacklist state without restore actions", () => {
   render(<BlacklistSellerManager sellers={[]} loading={false} onRestore={jest.fn()} />);
 
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  expect(screen.getByText("黑名单卖家管理")).toBeInTheDocument();
 });
 
 test("submits restore request with edited reason and score", () => {
@@ -20,7 +21,7 @@ test("submits restore request with edited reason and score", () => {
 
   const textboxes = screen.getAllByRole("textbox");
   const scoreInput = screen.getByRole("spinbutton");
-  const submitButton = screen.getByRole("button");
+  const submitButton = screen.getByRole("button", { name: "解除黑名单" });
 
   fireEvent.change(textboxes[0], {
     target: { value: "manual review completed" },

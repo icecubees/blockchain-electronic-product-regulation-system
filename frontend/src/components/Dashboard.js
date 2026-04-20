@@ -41,6 +41,9 @@ const ACTION_LABELS = {
   COMPLAINT_RESOLVED: "投诉裁决完成",
   FILE_UPLOADED: "文件上传",
   ACCESS_DENIED: "访问被拒绝",
+  ORDER_REFUND_COMPLETED: "订单退款完成",
+  AFTER_SALES_REQUEST_CREATED: "售后申请创建",
+  AFTER_SALES_REQUEST_ESCALATED: "售后升级投诉",
 };
 
 const ACTION_COLORS = {
@@ -71,6 +74,9 @@ const ACTION_COLORS = {
   COMPLAINT_RESOLVED: "text-fuchsia-400",
   FILE_UPLOADED: "text-yellow-400",
   ACCESS_DENIED: "text-rose-400",
+  ORDER_REFUND_COMPLETED: "text-emerald-400",
+  AFTER_SALES_REQUEST_CREATED: "text-cyan-400",
+  AFTER_SALES_REQUEST_ESCALATED: "text-amber-400",
 };
 
 const TARGET_LABELS = {
@@ -110,13 +116,21 @@ const FILTER_OPTIONS = [
   },
   {
     id: "order",
-    label: "订单与物流",
+    label: "订单物流",
     actions: ["PRODUCT_PURCHASED", "ORDER_SHIPPED", "ORDER_CONFIRMED", "ORDER_RATED"],
   },
   {
     id: "complaint",
-    label: "投诉与处置",
-    actions: ["COMPLAINT_RAISED", "SELLER_RESPONSE_SUBMITTED", "COMPLAINT_RESOLVED", "SELLER_BLACKLISTED", "SELLER_RESTORED"],
+    label: "投诉处置",
+    actions: [
+      "COMPLAINT_RAISED",
+      "SELLER_RESPONSE_SUBMITTED",
+      "COMPLAINT_RESOLVED",
+      "SELLER_BLACKLISTED",
+      "SELLER_RESTORED",
+      "AFTER_SALES_REQUEST_CREATED",
+      "AFTER_SALES_REQUEST_ESCALATED",
+    ],
   },
   {
     id: "security",
@@ -148,6 +162,7 @@ const DETAIL_KEY_LABELS = {
   type: "类型",
   componentName: "部件名称",
   serviceResult: "处理结果",
+  afterSalesRequestId: "售后申请 ID",
 };
 
 const ROLE_LABELS = {
@@ -173,6 +188,26 @@ const AUDIT_STATUS_LABELS = {
   2: "已驳回或已下架",
 };
 
+const DEFAULT_AUDIT_LOG_FILTERS = {
+  keyword: "",
+  action: "",
+  result: "",
+  targetType: "",
+  targetId: "",
+  operatorKeyword: "",
+  dateFrom: "",
+  dateTo: "",
+  page: 1,
+  pageSize: 10,
+};
+
+const DEFAULT_AUDIT_LOG_PAGINATION = {
+  page: 1,
+  pageSize: 10,
+  total: 0,
+  totalPages: 1,
+};
+
 function formatDetailValue(key, value) {
   if (Array.isArray(value)) {
     return value.map((item) => formatDetailValue(key, item)).join(" / ");
@@ -184,6 +219,10 @@ function formatDetailValue(key, value) {
 
   if (key === "auditStatus") {
     return AUDIT_STATUS_LABELS[value] || String(value);
+  }
+
+  if (key === "complaintType") {
+    return COMPLAINT_TYPE_LABELS[value] || String(value);
   }
 
   if (key === "currentRole") {
@@ -213,6 +252,14 @@ export default function Dashboard({
   complaints = [],
   auditLogs = [],
   stats,
+  auditLogFilters = DEFAULT_AUDIT_LOG_FILTERS,
+  appliedAuditLogFilters = DEFAULT_AUDIT_LOG_FILTERS,
+  auditLogPagination = DEFAULT_AUDIT_LOG_PAGINATION,
+  auditLogLoading = false,
+  onAuditLogFilterChange,
+  onAuditLogSearch,
+  onAuditLogReset,
+  onAuditLogPageChange,
 }) {
   const [selectedFilter, setSelectedFilter] = useState("all");
 
@@ -241,8 +288,8 @@ export default function Dashboard({
   const electronicsRiskData = [
     { label: "已召回", value: summary.recalledProducts || 0 },
     { label: "二手/翻新", value: summary.usedOrRefurbishedActiveProducts || 0 },
-    { label: "缺失 CCC", value: summary.productsMissingCcc || 0 },
-    { label: "电池类投诉", value: summary.batteryComplaintCount || 0 },
+    { label: "缺少 CCC", value: summary.productsMissingCcc || 0 },
+    { label: "电池投诉", value: summary.batteryComplaintCount || 0 },
     { label: "高风险卖家", value: summary.riskySellersCount || 0 },
     { label: "高风险商品", value: summary.productsWithHighRiskTags || 0 },
   ];
@@ -251,38 +298,46 @@ export default function Dashboard({
     count: item.count,
   }));
 
-  const normalizedAuditLogs = useMemo(() => {
-    return auditLogs.map((log) => {
-      let detailItems = [];
+  const normalizedAuditLogs = useMemo(
+    () =>
+      auditLogs.map((log) => {
+        let detailItems = [];
 
-      if (log.details) {
-        try {
-          const parsed = typeof log.details === "string" ? JSON.parse(log.details) : log.details;
-          detailItems = Object.entries(parsed).map(([key, value]) => ({
-            key,
-            label: DETAIL_KEY_LABELS[key] || key,
-            value: formatDetailValue(key, value),
-          }));
-        } catch (error) {
-          detailItems = [{ key: "details", label: "详情", value: String(log.details) }];
+        if (log.details) {
+          try {
+            const parsed = typeof log.details === "string" ? JSON.parse(log.details) : log.details;
+            detailItems = Object.entries(parsed).map(([key, value]) => ({
+              key,
+              label: DETAIL_KEY_LABELS[key] || key,
+              value: formatDetailValue(key, value),
+            }));
+          } catch (error) {
+            detailItems = [{ key: "details", label: "详情", value: String(log.details) }];
+          }
         }
-      }
 
-      return {
-        id: log.id,
-        action: log.action,
-        timestamp: new Date(log.createdAt || Date.now()).getTime(),
-        actionLabel: ACTION_LABELS[log.action] || log.action,
-        targetLabel: TARGET_LABELS[log.targetType] || log.targetType || "目标",
-        color: ACTION_COLORS[log.action] || "text-gray-300",
-        operator: log.operatorUsername || (log.operatorRole ? `系统（${log.operatorRole}）` : "系统"),
-        result: log.result || "SUCCESS",
-        target: `${TARGET_LABELS[log.targetType] || log.targetType || "目标"}${log.targetId ? ` #${log.targetId}` : ""}`,
-        detailItems: detailItems.length ? detailItems : [{ key: "details", label: "详情", value: "未提供" }],
-        hash: log.txHash || log.ipfsHash || "未提供",
-      };
-    });
-  }, [auditLogs]);
+        return {
+          id: log.id,
+          action: log.action,
+          timestamp: new Date(log.createdAt || Date.now()).getTime(),
+          actionLabel: ACTION_LABELS[log.action] || log.action,
+          color: ACTION_COLORS[log.action] || "text-slate-300",
+          operator:
+            log.operatorUsername ||
+            (log.operatorRole ? `系统(${log.operatorRole})` : "系统"),
+          result: log.result || "SUCCESS",
+          target: `${TARGET_LABELS[log.targetType] || log.targetType || "目标"}${
+            log.targetId ? ` #${log.targetId}` : ""
+          }`,
+          detailItems:
+            detailItems.length > 0
+              ? detailItems
+              : [{ key: "details", label: "详情", value: "未提供" }],
+          hash: log.txHash || log.ipfsHash || "未提供",
+        };
+      }),
+    [auditLogs]
+  );
 
   const visibleAuditLogs = useMemo(() => {
     const selected = FILTER_OPTIONS.find((item) => item.id === selectedFilter);
@@ -292,6 +347,37 @@ export default function Dashboard({
 
     return normalizedAuditLogs.filter((item) => selected.actions.includes(item.action));
   }, [normalizedAuditLogs, selectedFilter]);
+
+  const appliedFilterSummary = useMemo(() => {
+    const items = [];
+    if (appliedAuditLogFilters.keyword) {
+      items.push(`关键词：${appliedAuditLogFilters.keyword}`);
+    }
+    if (appliedAuditLogFilters.action) {
+      items.push(`动作：${appliedAuditLogFilters.action}`);
+    }
+    if (appliedAuditLogFilters.result) {
+      items.push(`结果：${appliedAuditLogFilters.result}`);
+    }
+    if (appliedAuditLogFilters.targetType) {
+      items.push(`目标类型：${appliedAuditLogFilters.targetType}`);
+    }
+    if (appliedAuditLogFilters.targetId) {
+      items.push(`目标 ID：${appliedAuditLogFilters.targetId}`);
+    }
+    if (appliedAuditLogFilters.operatorKeyword) {
+      items.push(`操作人：${appliedAuditLogFilters.operatorKeyword}`);
+    }
+    if (appliedAuditLogFilters.dateFrom || appliedAuditLogFilters.dateTo) {
+      items.push(
+        `时间：${appliedAuditLogFilters.dateFrom || "不限"} 至 ${
+          appliedAuditLogFilters.dateTo || "不限"
+        }`
+      );
+    }
+
+    return items;
+  }, [appliedAuditLogFilters]);
 
   const exportAuditLogsCsv = () => {
     const headers = ["id", "timestamp", "action", "operator", "result", "target", "details", "hash"];
@@ -303,10 +389,10 @@ export default function Dashboard({
         log.id,
         new Date(log.timestamp).toISOString(),
         log.actionLabel,
-        `"${String(log.operator).replace(/\"/g, '""')}"`,
+        `"${String(log.operator).replace(/"/g, '""')}"`,
         log.result,
-        `"${String(log.target).replace(/\"/g, '""')}"`,
-        `"${String(detailsText).replace(/\"/g, '""')}"`,
+        `"${String(log.target).replace(/"/g, '""')}"`,
+        `"${String(detailsText).replace(/"/g, '""')}"`,
         log.hash,
       ];
       lines.push(row.join(","));
@@ -323,12 +409,38 @@ export default function Dashboard({
     window.URL.revokeObjectURL(url);
   };
 
+  const handleAuditLogFieldChange = (key, value) => {
+    if (typeof onAuditLogFilterChange === "function") {
+      onAuditLogFilterChange(key, value);
+    }
+  };
+
+  const handleAuditLogSearch = () => {
+    if (typeof onAuditLogSearch === "function") {
+      onAuditLogSearch({ page: 1 });
+    }
+  };
+
+  const handleAuditLogReset = () => {
+    if (typeof onAuditLogReset === "function") {
+      onAuditLogReset();
+    }
+  };
+
+  const handleAuditLogPageChange = (page) => {
+    if (typeof onAuditLogPageChange === "function") {
+      onAuditLogPageChange(page);
+    }
+  };
+
   return (
     <div className="mb-8 rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-sky-50 p-6 shadow-inner">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">电子产品监管看板</h2>
-          <p className="mt-1 text-sm text-slate-500">基于审计日志、订单状态、投诉记录与链上流程数据生成的实时监管视图。</p>
+          <p className="mt-1 text-sm text-slate-500">
+            基于审计日志、订单状态、投诉记录与链上流程数据生成的实时监管视图。
+          </p>
         </div>
         <div className="grid min-w-[280px] grid-cols-2 gap-3 md:grid-cols-5">
           <SummaryCard label="待审商品" value={summary.pendingProducts} accent="text-amber-600" />
@@ -359,16 +471,40 @@ export default function Dashboard({
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-3 md:grid-cols-4">
-        <MetricCard label="在售二手/翻新商品" value={summary.usedOrRefurbishedActiveProducts} className="border-amber-100 bg-amber-50 text-amber-800" />
-        <MetricCard label="缺少 CCC 的在售商品" value={summary.productsMissingCcc} className="border-cyan-100 bg-cyan-50 text-cyan-800" />
-        <MetricCard label="电池相关投诉" value={summary.batteryComplaintCount} className="border-rose-100 bg-rose-50 text-rose-800" />
-        <MetricCard label="高风险卖家" value={summary.riskySellersCount} className="border-slate-200 bg-slate-50 text-slate-800" />
+        <MetricCard
+          label="在售二手/翻新商品"
+          value={summary.usedOrRefurbishedActiveProducts}
+          className="border-amber-100 bg-amber-50 text-amber-800"
+        />
+        <MetricCard
+          label="缺少 CCC 的在售商品"
+          value={summary.productsMissingCcc}
+          className="border-cyan-100 bg-cyan-50 text-cyan-800"
+        />
+        <MetricCard
+          label="电池相关投诉"
+          value={summary.batteryComplaintCount}
+          className="border-rose-100 bg-rose-50 text-rose-800"
+        />
+        <MetricCard
+          label="高风险卖家"
+          value={summary.riskySellersCount}
+          className="border-slate-200 bg-slate-50 text-slate-800"
+        />
       </div>
 
       <div className="mb-8 grid grid-cols-1 gap-8 lg:grid-cols-4">
         <ChartPanel title="实时结构概览">
           <PieChart>
-            <Pie data={pieData} cx="50%" cy="50%" innerRadius={64} outerRadius={92} paddingAngle={4} dataKey="value">
+            <Pie
+              data={pieData}
+              cx="50%"
+              cy="50%"
+              innerRadius={64}
+              outerRadius={92}
+              paddingAngle={4}
+              dataKey="value"
+            >
               {pieData.map((entry) => (
                 <Cell key={entry.name} fill={entry.color} />
               ))}
@@ -424,12 +560,12 @@ export default function Dashboard({
         </ChartPanel>
       </div>
 
-      <div className="flex h-[28rem] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-lg">
+      <div className="flex h-[36rem] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-lg">
         <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-5 py-3">
           <div>
             <h3 className="text-sm font-bold text-slate-100">审计日志中心</h3>
             <p className="mt-1 text-[11px] text-slate-400">
-              当前筛选：{FILTER_OPTIONS.find((item) => item.id === selectedFilter)?.label || "全部日志"}
+              快速分组：{FILTER_OPTIONS.find((item) => item.id === selectedFilter)?.label || "全部日志"}
             </p>
           </div>
           <button
@@ -440,9 +576,113 @@ export default function Dashboard({
           </button>
         </div>
 
+        <div className="grid gap-3 border-b border-slate-800 bg-slate-950/60 px-5 py-4 md:grid-cols-2 xl:grid-cols-4">
+          <input
+            value={auditLogFilters.keyword || ""}
+            onChange={(event) => handleAuditLogFieldChange("keyword", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+            placeholder="关键词 / 详情 / 哈希"
+          />
+          <input
+            value={auditLogFilters.operatorKeyword || ""}
+            onChange={(event) => handleAuditLogFieldChange("operatorKeyword", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+            placeholder="操作人 / 角色"
+          />
+          <input
+            value={auditLogFilters.targetId || ""}
+            onChange={(event) => handleAuditLogFieldChange("targetId", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+            placeholder="目标 ID"
+          />
+          <select
+            value={auditLogFilters.action || ""}
+            onChange={(event) => handleAuditLogFieldChange("action", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+          >
+            <option value="">全部动作</option>
+            {Object.entries(ACTION_LABELS).map(([action, label]) => (
+              <option key={action} value={action}>
+                {label}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={auditLogFilters.result || ""}
+            onChange={(event) => handleAuditLogFieldChange("result", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+          >
+            <option value="">全部结果</option>
+            <option value="SUCCESS">SUCCESS</option>
+            <option value="FAIL">FAIL</option>
+          </select>
+          <select
+            value={auditLogFilters.targetType || ""}
+            onChange={(event) => handleAuditLogFieldChange("targetType", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+          >
+            <option value="">全部目标类型</option>
+            {Object.entries(TARGET_LABELS).map(([targetType, label]) => (
+              <option key={targetType} value={targetType}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={auditLogFilters.dateFrom || ""}
+            onChange={(event) => handleAuditLogFieldChange("dateFrom", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+          />
+          <input
+            type="date"
+            value={auditLogFilters.dateTo || ""}
+            onChange={(event) => handleAuditLogFieldChange("dateTo", event.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+          />
+
+          <div className="md:col-span-2 xl:col-span-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={handleAuditLogSearch}
+                className="rounded bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700"
+              >
+                查询日志
+              </button>
+              <button
+                onClick={handleAuditLogReset}
+                className="rounded border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
+              >
+                重置条件
+              </button>
+              <span className="text-xs text-slate-400">
+                已加载 {auditLogPagination.total || visibleAuditLogs.length} 条，当前第{" "}
+                {auditLogPagination.page || 1} / {Math.max(auditLogPagination.totalPages || 1, 1)} 页
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+              {appliedFilterSummary.length > 0 ? (
+                appliedFilterSummary.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-slate-300"
+                  >
+                    {item}
+                  </span>
+                ))
+              ) : (
+                <span>当前未应用高级检索条件</span>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div className="custom-scrollbar flex-1 space-y-3 overflow-y-auto p-5 font-mono text-sm">
-          {visibleAuditLogs.length === 0 ? (
-            <div className="mt-10 text-center text-slate-500">当前筛选条件下暂无审计日志。</div>
+          {auditLogLoading ? (
+            <div className="mt-10 text-center text-slate-500">日志检索中...</div>
+          ) : visibleAuditLogs.length === 0 ? (
+            <div className="mt-10 text-center text-slate-500">当前条件下暂无审计日志。</div>
           ) : (
             visibleAuditLogs.map((log) => (
               <div
@@ -491,6 +731,32 @@ export default function Dashboard({
               </div>
             ))
           )}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 bg-slate-900/80 px-5 py-3 text-xs text-slate-400">
+          <div>
+            第 {auditLogPagination.page || 1} 页，每页 {auditLogPagination.pageSize || 10} 条，共{" "}
+            {auditLogPagination.total || visibleAuditLogs.length} 条
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleAuditLogPageChange((auditLogPagination.page || 1) - 1)}
+              disabled={(auditLogPagination.page || 1) <= 1 || auditLogLoading}
+              className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-200 disabled:opacity-50"
+            >
+              上一页
+            </button>
+            <button
+              onClick={() => handleAuditLogPageChange((auditLogPagination.page || 1) + 1)}
+              disabled={
+                (auditLogPagination.page || 1) >= Math.max(auditLogPagination.totalPages || 1, 1) ||
+                auditLogLoading
+              }
+              className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-200 disabled:opacity-50"
+            >
+              下一页
+            </button>
+          </div>
         </div>
       </div>
 

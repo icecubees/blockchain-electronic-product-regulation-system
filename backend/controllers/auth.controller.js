@@ -17,6 +17,7 @@ const {
 } = require("../services/chain.service");
 
 const User = db.user;
+const { Op } = db.Sequelize;
 const SELLER_QUALIFICATION_TYPES = new Set([
   "retailer",
   "brand_authorized",
@@ -24,6 +25,8 @@ const SELLER_QUALIFICATION_TYPES = new Set([
   "used_device_specialist",
   "comprehensive",
 ]);
+const PRIVILEGED_ROLES = new Set(["admin", "regulator"]);
+const USER_STATUSES = new Set([0, 1, 2]);
 
 function normalizeOptionalString(value) {
   if (value === undefined || value === null) {
@@ -47,6 +50,122 @@ function buildSellerQualificationFields(input = {}) {
     usedDeviceQualificationHash: normalizeOptionalString(input.usedDeviceQualificationHash),
     qualificationNotes: normalizeOptionalString(input.qualificationNotes),
   };
+}
+
+function normalizeRole(value) {
+  const normalized = normalizeOptionalString(value);
+  return normalized ? normalized.toLowerCase() : null;
+}
+
+function normalizeStatus(value, fallback = null) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  if (typeof value === "number") {
+    return USER_STATUSES.has(value) ? value : fallback;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  const aliasMap = {
+    pending: 0,
+    active: 1,
+    frozen: 2,
+  };
+
+  if (Object.prototype.hasOwnProperty.call(aliasMap, normalized)) {
+    return aliasMap[normalized];
+  }
+
+  const parsed = parseInt(normalized, 10);
+  return USER_STATUSES.has(parsed) ? parsed : fallback;
+}
+
+function parsePositiveInteger(value, fallbackValue, max = 100) {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    return fallbackValue;
+  }
+
+  return Math.min(parsed, max);
+}
+
+function getUserScopeForOperator(operator) {
+  if (operator?.role === "admin") {
+    return ["buyer", "seller", "regulator", "admin"];
+  }
+
+  if (operator?.role === "regulator") {
+    return ["buyer", "seller"];
+  }
+
+  return [];
+}
+
+function canManageUser(operator, targetUser) {
+  if (!operator || !targetUser || operator.id === targetUser.id) {
+    return false;
+  }
+
+  if (operator.role === "admin") {
+    return targetUser.role !== "admin";
+  }
+
+  if (operator.role === "regulator") {
+    return ["buyer", "seller"].includes(targetUser.role);
+  }
+
+  return false;
+}
+
+function serializeManagedUser(user, operator) {
+  const rawUser = user?.dataValues || user;
+
+  return {
+    id: rawUser.id,
+    username: rawUser.username,
+    role: rawUser.role,
+    status: rawUser.status,
+    ethAddress: rawUser.ethAddress,
+    qualificationType: rawUser.qualificationType || null,
+    isBlacklisted: Boolean(rawUser.isBlacklisted),
+    frozenReason: rawUser.frozenReason || null,
+    frozenAt: rawUser.frozenAt || null,
+    createdAt: rawUser.createdAt,
+    updatedAt: rawUser.updatedAt,
+    canManage: canManageUser(operator, rawUser),
+  };
+}
+
+async function createPrivilegedUser({
+  username,
+  password,
+  role,
+  ethAddress = null,
+}) {
+  const normalizedUsername = normalizeOptionalString(username);
+  const normalizedRole = normalizeRole(role);
+  const normalizedPassword = String(password || "");
+
+  if (!normalizedUsername || !normalizedPassword) {
+    throw new Error("Username and password are required");
+  }
+  if (!PRIVILEGED_ROLES.has(normalizedRole)) {
+    throw new Error("Role must be admin or regulator");
+  }
+
+  const existed = await User.findOne({ where: { username: normalizedUsername } });
+  if (existed) {
+    throw new Error("Username already exists");
+  }
+
+  return User.create({
+    username: normalizedUsername,
+    password: bcrypt.hashSync(normalizedPassword, 8),
+    role: normalizedRole,
+    status: 1,
+    ethAddress: ethAddress || web3.eth.accounts.create().address,
+  });
 }
 
 async function fetchSellerChainProfile(user) {
@@ -121,7 +240,10 @@ exports.signin = async (req, res) => {
       return res.status(403).send({ message: "Account is pending approval" });
     }
     if (user.status === 2) {
-      return res.status(403).send({ message: "Account is frozen" });
+      return res.status(403).send({
+        message: "Account is frozen",
+        frozenReason: user.frozenReason || null,
+      });
     }
 
     const passwordIsValid = bcrypt.compareSync(req.body.password, user.password);
@@ -154,10 +276,13 @@ exports.signin = async (req, res) => {
       id: user.id,
       username: user.username,
       role: user.role,
+      status: user.status,
       ethAddress: user.ethAddress,
       accessToken: token,
       reputationScore: sellerProfile.reputationScore,
       isBlacklisted: sellerProfile.isBlacklisted,
+      frozenReason: user.frozenReason || null,
+      frozenAt: user.frozenAt || null,
     });
   } catch (error) {
     return res.status(500).send({ message: error.message });
@@ -328,3 +453,129 @@ exports.unblacklistSeller = async (req, res) => {
     return res.status(500).send({ message: error.message });
   }
 };
+
+exports.getUsers = async (req, res) => {
+  try {
+    const page = parsePositiveInteger(req.query.page, 1, 100000);
+    const pageSize = parsePositiveInteger(req.query.pageSize || req.query.limit, 10, 100);
+    const roleFilter = normalizeRole(req.query.role);
+    const statusFilter = normalizeStatus(req.query.status, null);
+    const keyword = normalizeOptionalString(req.query.q);
+    const visibleRoles = getUserScopeForOperator(req.user);
+
+    if (visibleRoles.length === 0) {
+      return res.status(403).send({ message: "You do not have permission to view users" });
+    }
+
+    const where = {
+      role: roleFilter && visibleRoles.includes(roleFilter) ? roleFilter : { [Op.in]: visibleRoles },
+    };
+
+    if (statusFilter !== null) {
+      where.status = statusFilter;
+    }
+    if (keyword) {
+      where[Op.or] = [
+        { username: { [Op.like]: `%${keyword}%` } },
+        { ethAddress: { [Op.like]: `%${keyword}%` } },
+      ];
+    }
+
+    const query = {
+      where,
+      attributes: [
+        "id",
+        "username",
+        "role",
+        "status",
+        "ethAddress",
+        "qualificationType",
+        "isBlacklisted",
+        "frozenReason",
+        "frozenAt",
+        "createdAt",
+        "updatedAt",
+      ],
+      order: [["updatedAt", "DESC"]],
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    };
+
+    const [users, total] = await Promise.all([
+      User.findAll(query),
+      User.count({ where }),
+    ]);
+
+    return res.send({
+      items: users.map((user) => serializeManagedUser(user, req.user)),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(Math.ceil(total / pageSize), 1),
+      },
+      governance: {
+        currentRole: req.user.role,
+        visibleRoles,
+      },
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.updateUserStatus = async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const nextStatus = normalizeStatus(req.body.status, null);
+    const governanceReason = String(req.body.reason || "").trim();
+    const user = await User.findByPk(userId);
+
+    if (!user) {
+      return res.status(404).send({ message: "User not found" });
+    }
+    if (nextStatus === null || ![1, 2].includes(nextStatus)) {
+      return res.status(400).send({ message: "Status must be 1(active) or 2(frozen)" });
+    }
+    if (!canManageUser(req.user, user)) {
+      await auditService.recordAccessDenied(req, ["regulator", "admin"]);
+      return res.status(403).send({ message: "You do not have permission to manage this user" });
+    }
+    if (nextStatus === 2 && !governanceReason) {
+      return res.status(400).send({ message: "Freeze reason is required" });
+    }
+
+    user.status = nextStatus;
+    if (nextStatus === 2) {
+      user.frozenReason = governanceReason;
+      user.frozenAt = new Date();
+    } else {
+      user.frozenReason = null;
+      user.frozenAt = null;
+    }
+    await user.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: nextStatus === 2 ? "USER_FROZEN" : "USER_UNFROZEN",
+      targetType: "USER",
+      targetId: user.id,
+      result: "SUCCESS",
+      details: {
+        username: user.username,
+        role: user.role,
+        reason: governanceReason || null,
+      },
+      req,
+    });
+
+    return res.send({
+      message: nextStatus === 2 ? "User frozen successfully" : "User restored successfully",
+      user: serializeManagedUser(user, req.user),
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.createPrivilegedUser = createPrivilegedUser;

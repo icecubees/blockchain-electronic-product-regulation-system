@@ -14,7 +14,8 @@ const authHeader = () => {
 
 const getAllProducts = (params = {}) => axios.get(API_URL, { params });
 const getProductTrace = (productId) => axios.get(`${API_URL}${productId}/trace`);
-const getPendingProducts = () => axios.get(API_URL + "pending", { headers: authHeader() });
+const getPendingProducts = (params = {}) =>
+  axios.get(API_URL + "pending", { headers: authHeader(), params });
 const getMyProducts = () => axios.get(API_URL + "my-products", { headers: authHeader() });
 
 const addProduct = (payload, rawFile) => {
@@ -70,6 +71,14 @@ const updateRecallNotificationStatus = (notificationId, status) =>
 const getRecallNotificationSummary = (params = {}) =>
   axios.get(API_URL + "recall-notifications/summary", { headers: authHeader(), params });
 const getProductAfterSales = (productId) => axios.get(`${API_URL}${productId}/after-sales`);
+const createAfterSalesRequest = (payload) =>
+  axios.post(API_URL + "after-sales-request", payload, { headers: authHeader() });
+const respondToAfterSalesRequest = (requestId, response, evidenceIpfsHash) =>
+  axios.post(
+    API_URL + "respond-after-sales-request",
+    { requestId, response, evidenceIpfsHash },
+    { headers: authHeader() }
+  );
 const recordAfterSales = (payload) =>
   axios.post(API_URL + "after-sales", payload, { headers: authHeader() });
 const shipOrder = (orderId, trackingNumber, shippingCarrier) =>
@@ -104,7 +113,8 @@ const resolveComplaint = (orderId, rulingForBuyer, rulingDetails) =>
     { headers: authHeader() }
   );
 
-const getAllComplaints = () => axios.get(API_URL + "complaints", { headers: authHeader() });
+const getAllComplaints = (params = {}) =>
+  axios.get(API_URL + "complaints", { headers: authHeader(), params });
 
 const ProductService = {
   getAllProducts,
@@ -123,6 +133,8 @@ const ProductService = {
   updateRecallNotificationStatus,
   getRecallNotificationSummary,
   getProductAfterSales,
+  createAfterSalesRequest,
+  respondToAfterSalesRequest,
   recordAfterSales,
   shipOrder,
   confirmReceipt,

@@ -93,6 +93,21 @@ module.exports = function (app) {
     controller.getMyOrders
   );
   app.post(
+    "/api/products/after-sales-request",
+    [verifyToken, requireRoles("buyer")],
+    controller.createAfterSalesRequest
+  );
+  app.post(
+    "/api/products/respond-after-sales-request",
+    [verifyToken, requireRoles("seller")],
+    controller.respondToAfterSalesRequest
+  );
+  app.post(
+    "/api/products/escalate-after-sales-request",
+    [verifyToken, requireRoles("regulator", "admin")],
+    controller.escalateAfterSalesRequestToComplaint
+  );
+  app.post(
     "/api/products/after-sales",
     [verifyToken, requireRoles("seller", "regulator", "admin")],
     controller.recordAfterSales

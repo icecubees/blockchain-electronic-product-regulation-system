@@ -4,9 +4,13 @@ import Register from "./Register";
 import AuthService from "../services/auth.service";
 import FileService from "../services/file.service";
 
-jest.mock("react-router-dom", () => ({
-  Link: ({ children, to }) => <a href={to}>{children}</a>,
-}), { virtual: true });
+jest.mock(
+  "react-router-dom",
+  () => ({
+    Link: ({ children, to }) => <a href={to}>{children}</a>,
+  }),
+  { virtual: true }
+);
 
 jest.mock("../services/auth.service", () => ({
   register: jest.fn(),

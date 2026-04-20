@@ -10,6 +10,8 @@ module.exports = (sequelize, Sequelize) => {
     repairQualificationHash: { type: Sequelize.STRING },
     usedDeviceQualificationHash: { type: Sequelize.STRING },
     qualificationNotes: { type: Sequelize.TEXT("long") },
+    frozenReason: { type: Sequelize.TEXT("long") },
+    frozenAt: { type: Sequelize.DATE },
     isBlacklisted: {
       type: Sequelize.BOOLEAN,
       defaultValue: false,

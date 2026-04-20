@@ -7,9 +7,13 @@ import AuthService from "../services/auth.service";
 
 const mockNavigate = jest.fn();
 
-jest.mock("react-router-dom", () => ({
-  useNavigate: () => mockNavigate,
-}), { virtual: true });
+jest.mock(
+  "react-router-dom",
+  () => ({
+    useNavigate: () => mockNavigate,
+  }),
+  { virtual: true }
+);
 
 jest.mock("../services/product.service", () => ({
   addProduct: jest.fn(),
