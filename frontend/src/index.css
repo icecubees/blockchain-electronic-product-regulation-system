@@ -2,3 +2,402 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --ers-ink: #0b1720;
+  --ers-muted: #667887;
+  --ers-line: rgba(29, 53, 75, 0.12);
+  --ers-surface: rgba(255, 255, 255, 0.86);
+  --ers-surface-strong: #ffffff;
+  --ers-accent: #0f766e;
+  --ers-accent-strong: #115e59;
+  --ers-warning: #b7791f;
+  --ers-danger: #b42318;
+  --ers-shadow: 0 24px 70px rgba(15, 36, 55, 0.13);
+  --ers-shadow-soft: 0 12px 38px rgba(15, 36, 55, 0.09);
+  --ers-radius: 22px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 1180px;
+  scroll-behavior: auto;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: auto;
+  background:
+    radial-gradient(circle at 7% 2%, rgba(20, 184, 166, 0.16), transparent 30rem),
+    radial-gradient(circle at 90% 10%, rgba(180, 83, 9, 0.13), transparent 28rem),
+    linear-gradient(135deg, #eef5f3 0%, #f7faf8 42%, #edf3f7 100%);
+  color: var(--ers-ink);
+  font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  font-feature-settings: "tnum";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.62), transparent 78%);
+}
+
+#root,
+.App {
+  min-height: 100vh;
+}
+
+.App {
+  text-align: left;
+}
+
+.App > .min-h-screen,
+.App > div[class*="min-h-screen"] {
+  background: transparent !important;
+}
+
+.App header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.7) !important;
+  background:
+    linear-gradient(135deg, rgba(8, 28, 35, 0.94), rgba(13, 65, 62, 0.9)) !important;
+  box-shadow: 0 18px 55px rgba(8, 27, 38, 0.22) !important;
+  backdrop-filter: blur(20px);
+}
+
+.App header h1,
+.App header h2,
+.App header p {
+  color: #f8fbfb !important;
+}
+
+.App header p {
+  opacity: 0.72;
+}
+
+.App header button {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #f8fbfb !important;
+  box-shadow: none !important;
+}
+
+.App header button:hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+}
+
+.App main,
+.App > div > .mx-auto,
+.App > div > form,
+.App > div > .w-full {
+  animation: ers-rise 0.52s ease both;
+}
+
+.App .max-w-7xl {
+  max-width: 1720px !important;
+}
+
+.App .regulator-workspace {
+  grid-template-columns: 300px minmax(0, 1fr) !important;
+}
+
+.App .regulator-content {
+  min-width: 0;
+  padding-top: 0;
+}
+
+.App .regulator-sidebar {
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.App [id^="regulator-section-"] {
+  scroll-margin-top: 112px;
+}
+
+.App .max-w-4xl {
+  max-width: 1120px !important;
+}
+
+.App .max-w-2xl {
+  max-width: 880px !important;
+}
+
+.App .max-w-md {
+  max-width: 500px !important;
+}
+
+.App h1,
+.App h2,
+.App h3 {
+  letter-spacing: -0.025em;
+}
+
+.App h1,
+.App h2 {
+  color: var(--ers-ink);
+}
+
+.App a {
+  color: var(--ers-accent-strong);
+  text-underline-offset: 4px;
+  transition: color 160ms ease, opacity 160ms ease;
+}
+
+.App a:hover {
+  color: #0d9488;
+}
+
+.App section,
+.App .rounded-3xl,
+.App .rounded-2xl,
+.App .rounded-xl,
+.App .rounded-lg {
+  border-color: var(--ers-line) !important;
+}
+
+.App :is(.bg-white, .bg-slate-50, .bg-gray-50):not(header *):not(button):not(input):not(select):not(textarea) {
+  background-color: var(--ers-surface) !important;
+}
+
+.App :is(.shadow, .shadow-sm, .shadow-md, .shadow-lg, .shadow-xl, .shadow-2xl) {
+  box-shadow: var(--ers-shadow-soft) !important;
+}
+
+.App .rounded-3xl,
+.App .rounded-2xl {
+  box-shadow: var(--ers-shadow-soft);
+}
+
+.App section.rounded,
+.App section.rounded-2xl,
+.App section.rounded-3xl,
+.App div.rounded-3xl,
+.App div.rounded-2xl {
+  position: relative;
+}
+
+.App section.rounded::before,
+.App section.rounded-2xl::before,
+.App section.rounded-3xl::before,
+.App div.rounded-3xl::before,
+.App div.rounded-2xl::before {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.App input,
+.App select,
+.App textarea {
+  min-height: 42px;
+  border: 1px solid rgba(51, 65, 85, 0.16) !important;
+  border-radius: 13px !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: var(--ers-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.App textarea {
+  min-height: 92px;
+}
+
+.App input:focus,
+.App select:focus,
+.App textarea:focus {
+  border-color: rgba(15, 118, 110, 0.55) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+}
+
+.App input[type="checkbox"] {
+  min-height: auto;
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--ers-accent);
+}
+
+.App input[type="file"] {
+  min-height: auto;
+  padding: 0.55rem;
+}
+
+.App label {
+  color: #334155;
+}
+
+.App button,
+.App [role="button"] {
+  border-radius: 999px !important;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.App button:not(:disabled):hover,
+.App [role="button"]:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px rgba(15, 36, 55, 0.14);
+}
+
+.App button:disabled {
+  cursor: not-allowed;
+  filter: saturate(0.75);
+}
+
+.App button[class*="bg-indigo"],
+.App button[class*="bg-blue"],
+.App button[class*="bg-sky"] {
+  background: linear-gradient(135deg, var(--ers-accent), var(--ers-accent-strong)) !important;
+}
+
+.App button[class*="bg-red"],
+.App button[class*="bg-rose"] {
+  background: linear-gradient(135deg, #e11d48, var(--ers-danger)) !important;
+}
+
+.App button[class*="bg-amber"],
+.App button[class*="bg-yellow"] {
+  background: linear-gradient(135deg, #d97706, var(--ers-warning)) !important;
+}
+
+.App table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  border: 1px solid var(--ers-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.App thead {
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(17, 94, 89, 0.92)) !important;
+}
+
+.App th {
+  color: rgba(255, 255, 255, 0.82) !important;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.App td {
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+.App tbody tr {
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.App tbody tr:hover {
+  background: rgba(20, 184, 166, 0.045);
+}
+
+.App .fixed.inset-0 {
+  backdrop-filter: blur(10px);
+}
+
+.App .fixed.inset-0 > div {
+  animation: ers-pop 0.22s ease both;
+}
+
+.App ::selection {
+  background: rgba(20, 184, 166, 0.22);
+}
+
+.App .recharts-wrapper {
+  font-family: inherit !important;
+}
+
+.App .recharts-surface {
+  overflow: visible;
+}
+
+@keyframes ers-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ers-pop {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@media (max-width: 1180px) {
+  html {
+    min-width: 0;
+  }
+
+  body {
+    overflow-x: hidden;
+  }
+
+  .App header {
+    position: static;
+  }
+
+  .App .regulator-content {
+    padding-top: 0;
+  }
+
+  .App .regulator-workspace {
+    grid-template-columns: 1fr !important;
+  }
+
+  .App .regulator-sidebar {
+    position: static;
+    max-height: none;
+  }
+
+  .App [id^="regulator-section-"] {
+    scroll-margin-top: 24px;
+  }
+}

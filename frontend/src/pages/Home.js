@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { QRCodeCanvas } from "qrcode.react";
 
@@ -127,6 +127,9 @@ const REGULATOR_NAV_ITEMS = [
   { key: "users", label: "用户治理", description: "冻结、解冻和筛查平台用户" },
   { key: "market", label: "市场商品", description: "查看和干预平台商品流通情况" },
 ];
+
+const REGULATOR_SECTION_KEYS = REGULATOR_NAV_ITEMS.map((item) => item.key);
+const REGULATOR_SCROLL_OFFSET = 112;
 
 function isRegulatorUser(user) {
   return user?.role === "regulator" || user?.role === "admin";
@@ -264,6 +267,8 @@ export default function Home() {
   const [delistModal, setDelistModal] = useState(INITIAL_DELIST_MODAL);
   const [recallModal, setRecallModal] = useState(INITIAL_RECALL_MODAL);
   const [activeRegulatorSection, setActiveRegulatorSection] = useState("dashboard");
+  const pendingRegulatorSectionRef = useRef(null);
+  const pendingRegulatorTimerRef = useRef(null);
 
   const isRegulator = isRegulatorUser(currentUser);
 
@@ -276,6 +281,61 @@ export default function Home() {
       reloadRegulatorData(user);
     }
   }, []);
+
+  useEffect(() => {
+    if (!isRegulator) {
+      return undefined;
+    }
+
+    let frameId = null;
+
+    const syncActiveSection = () => {
+      frameId = null;
+      if (pendingRegulatorSectionRef.current) {
+        return;
+      }
+
+      const anchorOffset = REGULATOR_SCROLL_OFFSET;
+      let nextActiveSection = REGULATOR_SECTION_KEYS[0];
+
+      REGULATOR_SECTION_KEYS.forEach((sectionKey) => {
+        const section = document.getElementById(`regulator-section-${sectionKey}`);
+        if (!section) {
+          return;
+        }
+
+        if (section.getBoundingClientRect().top <= anchorOffset) {
+          nextActiveSection = sectionKey;
+        }
+      });
+
+      setActiveRegulatorSection((current) =>
+        current === nextActiveSection ? current : nextActiveSection
+      );
+    };
+
+    const requestSync = () => {
+      if (frameId !== null) {
+        return;
+      }
+      frameId = window.requestAnimationFrame(syncActiveSection);
+    };
+
+    requestSync();
+    window.addEventListener("scroll", requestSync, { passive: true });
+    window.addEventListener("resize", requestSync);
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      if (pendingRegulatorTimerRef.current) {
+        window.clearTimeout(pendingRegulatorTimerRef.current);
+      }
+      window.removeEventListener("scroll", requestSync);
+      window.removeEventListener("resize", requestSync);
+    };
+  }, [isRegulator]);
 
   const buildMarketParams = (page, nextFilters) => {
     const params = {
@@ -745,8 +805,22 @@ export default function Home() {
   };
 
   const marketSummaryText = `Current page ${products.length} items, ${marketPagination.total} total`;
-  const activeRegulatorNav =
-    REGULATOR_NAV_ITEMS.find((item) => item.key === activeRegulatorSection) || REGULATOR_NAV_ITEMS[0];
+
+  const scrollToRegulatorSection = (sectionKey) => {
+    pendingRegulatorSectionRef.current = sectionKey;
+    if (pendingRegulatorTimerRef.current) {
+      window.clearTimeout(pendingRegulatorTimerRef.current);
+    }
+    setActiveRegulatorSection(sectionKey);
+    const section = document.getElementById(`regulator-section-${sectionKey}`);
+    if (section) {
+      const top = section.getBoundingClientRect().top + window.scrollY - REGULATOR_SCROLL_OFFSET;
+      window.scrollTo({ top: Math.max(top, 0), behavior: "smooth" });
+    }
+    pendingRegulatorTimerRef.current = window.setTimeout(() => {
+      pendingRegulatorSectionRef.current = null;
+    }, 900);
+  };
 
   return (
     <div className="min-h-screen bg-slate-100 pb-10">
@@ -814,9 +888,9 @@ export default function Home() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-8">
-        <div className={isRegulator ? "grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]" : "space-y-6"}>
+        <div className={isRegulator ? "regulator-workspace grid gap-6 lg:grid-cols-[300px_minmax(0,1fr)]" : "space-y-6"}>
           {isRegulator && (
-            <aside className="h-fit rounded-3xl bg-slate-900 p-4 text-white shadow-lg lg:sticky lg:top-6">
+            <aside className="regulator-sidebar h-fit rounded-3xl bg-slate-900 p-4 text-white shadow-lg lg:sticky lg:top-28">
               <div className="border-b border-white/10 pb-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">
                   Regulator Console
@@ -835,13 +909,7 @@ export default function Home() {
                     <button
                       key={item.key}
                       type="button"
-                      onClick={() => {
-                        setActiveRegulatorSection(item.key);
-                        const section = document.getElementById(`regulator-section-${item.key}`);
-                        if (section) {
-                          section.scrollIntoView({ behavior: "smooth", block: "start" });
-                        }
-                      }}
+                      onClick={() => scrollToRegulatorSection(item.key)}
                       className={`w-full rounded-2xl px-4 py-3 text-left transition ${
                         isActive
                           ? "bg-white text-slate-900 shadow"
@@ -859,27 +927,10 @@ export default function Home() {
             </aside>
           )}
 
-          <div className="space-y-6">
+          <div className="regulator-content space-y-6">
         {isRegulator && (
           <>
-            <section id="regulator-section-dashboard" className="scroll-mt-6">
-              <div className="rounded-3xl bg-white p-6 shadow">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                      当前模块
-                    </p>
-                    <h2 className="mt-2 text-2xl font-bold text-slate-900">
-                      {activeRegulatorNav.label}
-                    </h2>
-                    <p className="mt-2 text-sm text-slate-500">{activeRegulatorNav.description}</p>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-600">
-                    当前监管员：{currentUser?.username || "--"}
-                  </div>
-                </div>
-              </div>
-
+            <section id="regulator-section-dashboard" className="scroll-mt-40">
               <Dashboard
               products={products}
               pendingProducts={pendingProducts}

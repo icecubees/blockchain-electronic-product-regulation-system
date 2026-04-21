@@ -40,6 +40,14 @@ beforeEach(() => {
   ProductService.addProduct.mockResolvedValue({ data: { message: "ok" } });
 });
 
+test("can return from publish page", () => {
+  render(<AddProduct />);
+
+  fireEvent.click(screen.getByRole("button", { name: "返回" }));
+
+  expect(mockNavigate).toHaveBeenCalledWith("/home");
+});
+
 test("submits electronic product fields together with existing publish flow", async () => {
   render(<AddProduct />);
 

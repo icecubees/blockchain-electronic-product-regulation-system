@@ -75,6 +75,15 @@ const AddProduct = () => {
 
   const navigate = useNavigate();
 
+  const goBackToPreviousPage = () => {
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+
+    navigate("/home");
+  };
+
   useEffect(() => {
     const user = AuthService.getCurrentUser();
     if (!user || user.role !== "seller") {
@@ -129,7 +138,17 @@ const AddProduct = () => {
   return (
     <div className="min-h-screen bg-gray-50 py-12 sm:px-6 lg:px-8">
       <div className="mx-auto w-full max-w-4xl">
-        <h2 className="text-center text-3xl font-extrabold text-gray-900">发布电子产品</h2>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <button
+            type="button"
+            onClick={goBackToPreviousPage}
+            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          >
+            返回
+          </button>
+          <h2 className="text-center text-3xl font-extrabold text-gray-900">发布电子产品</h2>
+          <div className="hidden w-[76px] sm:block" aria-hidden="true" />
+        </div>
 
         <div className="mt-8 rounded-lg bg-white px-6 py-8 shadow">
           <form onSubmit={handleSubmit} className="space-y-8">
