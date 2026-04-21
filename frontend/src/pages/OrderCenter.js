@@ -133,6 +133,240 @@ function formatOrderAmount(value) {
   return Number.isFinite(Number(value)) ? `${Number(value)} ETH` : "0 ETH";
 }
 
+function getProductTraceId(order) {
+  return order.product?.id || order.productId || order.product?.productId;
+}
+
+function getOrderTraceViewerRole(user) {
+  if (user?.role === "regulator" || user?.role === "admin") {
+    return "regulator";
+  }
+  if (user?.role === "seller") {
+    return "seller";
+  }
+  return "buyer";
+}
+
+function buildOrderTraceEvents(order) {
+  const events = [
+    {
+      key: "created",
+      type: "purchase",
+      title: "订单创建",
+      time: order.createdAt,
+      description: `买家购买 ${order.product?.name || "商品"}，订单金额 ${formatOrderAmount(order.price)}。`,
+      visibleTo: ["buyer", "seller", "regulator"],
+    },
+    {
+      key: "payment",
+      type: "payment",
+      title: "支付记录",
+      time: order.paidAt,
+      description: `支付状态：${getPaymentStatusLabel(order.paymentStatus)}，凭证：${order.paymentReference || order.paymentMethod || "暂无"}。`,
+      visibleTo: ["buyer", "seller", "regulator"],
+    },
+    {
+      key: "shipment",
+      type: "shipment",
+      title: "发货物流",
+      time: order.shippedAt,
+      description: `${order.shippingCarrier || "承运方未提供"} / ${order.trackingNumber || "物流单号未提供"}，当前状态：${getShippingLabel(order)}。`,
+      visibleTo: ["buyer", "seller", "regulator"],
+    },
+  ];
+
+  if (order.comment || order.rating) {
+    events.push({
+      key: "rating",
+      type: "rating",
+      title: "收货评价",
+      time: order.updatedAt,
+      description: `${order.rating ? `${order.rating}/5` : "未评分"}${order.comment ? `，${order.comment}` : ""}`,
+      visibleTo: ["buyer", "seller", "regulator"],
+    });
+  }
+
+  if (order.refundStatus && order.refundStatus !== "none") {
+    events.push({
+      key: "refund",
+      type: "refund",
+      title: "退款记录",
+      time: order.refundedAt,
+      description: `退款状态：${getRefundStatusLabel(order.refundStatus)}，金额：${formatOrderAmount(order.refundAmount)}。`,
+      visibleTo: ["buyer", "seller", "regulator"],
+    });
+  }
+
+  if (Array.isArray(order.recallNotifications)) {
+    order.recallNotifications.forEach((notification) => {
+      events.push({
+        key: `recall-${notification.id}`,
+        type: "recall",
+        title: "召回通知",
+        time: notification.notifiedAt,
+        description: `召回原因：${order.product?.recallReason || "召回处理中"}，通知状态：${getRecallNotificationStatusLabel(notification.status)}。`,
+        visibleTo: ["buyer", "seller", "regulator"],
+      });
+    });
+  }
+
+  if (Array.isArray(order.afterSalesRequests)) {
+    order.afterSalesRequests.forEach((request) => {
+      events.push({
+        key: `after-sales-request-${request.id}`,
+        type: "after_sales_request",
+        title: "买家售后申请",
+        time: request.createdAt,
+        description: `${getAfterSalesTypeLabel(request.type)} / ${getAfterSalesRequestStatusLabel(request.status)}：${request.description || "未提供说明"}`,
+        visibleTo: ["buyer", "seller", "regulator"],
+      });
+
+      if (request.sellerResponse) {
+        events.push({
+          key: `after-sales-response-${request.id}`,
+          type: "after_sales_response",
+          title: "商家售后响应",
+          time: request.updatedAt || request.createdAt,
+          description: request.sellerResponse,
+          visibleTo: ["buyer", "seller", "regulator"],
+        });
+      }
+    });
+  }
+
+  if (Array.isArray(order.afterSalesRecords)) {
+    order.afterSalesRecords.forEach((record) => {
+      events.push({
+        key: `after-sales-record-${record.id}`,
+        type: "after_sales_record",
+        title: "售后服务记录",
+        time: record.createdAt,
+        description: `${getAfterSalesTypeLabel(record.type)}${record.componentName ? ` / ${record.componentName}` : ""}：${record.description || "未提供说明"}。结果：${record.serviceResult || "未提供"}`,
+        visibleTo: ["buyer", "seller", "regulator"],
+      });
+    });
+  }
+
+  if (order.complaintReason) {
+    events.push({
+      key: "complaint",
+      type: "complaint",
+      title: "监管投诉",
+      time: order.complaintAt || order.updatedAt,
+      description: `${getComplaintTypeLabel(order.complaintType)} / ${order.complaintReason}`,
+      visibleTo: ["buyer", "seller", "regulator"],
+    });
+  }
+
+  if (order.sellerResponse) {
+    events.push({
+      key: "seller-response",
+      type: "complaint_response",
+      title: "商家投诉答辩",
+      time: order.sellerRespondedAt || order.updatedAt,
+      description: order.sellerResponse,
+      visibleTo: ["buyer", "seller", "regulator"],
+    });
+  }
+
+  if (order.rulingDetails) {
+    events.push({
+      key: "ruling",
+      type: "ruling",
+      title: "监管裁决",
+      time: order.resolvedAt || order.updatedAt,
+      description: order.rulingDetails,
+      visibleTo: ["regulator", "buyer", "seller"],
+    });
+  }
+
+  return events
+    .filter((event) => event.time || event.description)
+    .sort((left, right) => new Date(left.time || 0) - new Date(right.time || 0));
+}
+
+function OrderTracePanel({ order, currentUser }) {
+  const viewerRole = getOrderTraceViewerRole(currentUser);
+  const events = buildOrderTraceEvents(order).filter((event) =>
+    event.visibleTo.includes(viewerRole)
+  );
+  const product = order.product || {};
+
+  return (
+    <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-lg font-bold text-indigo-950">订单级溯源链</div>
+          <p className="mt-1 text-sm text-indigo-800">
+            围绕当前订单展示商品购买、履约、售后、投诉与召回过程。
+          </p>
+        </div>
+        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-indigo-700">
+          {viewerRole === "seller" ? "商家可见" : viewerRole === "regulator" ? "监管可见" : "买家可见"}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+        <div className="rounded-xl bg-white p-3">
+          <div className="text-slate-500">商品</div>
+          <div className="mt-1 font-semibold text-slate-900">{product.name || "未提供"}</div>
+        </div>
+        <div className="rounded-xl bg-white p-3">
+          <div className="text-slate-500">品牌 / 型号</div>
+          <div className="mt-1 font-semibold text-slate-900">
+            {[product.brand, product.model].filter(Boolean).join(" / ") || "未提供"}
+          </div>
+        </div>
+        <div className="rounded-xl bg-white p-3">
+          <div className="text-slate-500">订单状态</div>
+          <div className="mt-1 font-semibold text-slate-900">{getOrderStatusLabel(order)}</div>
+        </div>
+        <div className="rounded-xl bg-white p-3">
+          <div className="text-slate-500">支付状态</div>
+          <div className="mt-1 font-semibold text-slate-900">
+            {getPaymentStatusLabel(order.paymentStatus)}
+          </div>
+        </div>
+        <div className="rounded-xl bg-white p-3">
+          <div className="text-slate-500">召回状态</div>
+          <div className="mt-1 font-semibold text-slate-900">
+            {order.recallNotifications?.length || product.recallStatus ? "存在召回记录" : "暂无召回"}
+          </div>
+        </div>
+        <div className="rounded-xl bg-white p-3">
+          <div className="text-slate-500">售后记录</div>
+          <div className="mt-1 font-semibold text-slate-900">
+            {(order.afterSalesRequests?.length || 0) + (order.afterSalesRecords?.length || 0)} 条
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-3">
+        {events.length > 0 ? (
+          events.map((event, index) => (
+            <div key={event.key} className="flex gap-3 rounded-xl bg-white p-4 text-sm">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-bold text-white">
+                {index + 1}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-semibold text-slate-900">{event.title}</div>
+                  <div className="text-xs text-slate-500">{formatOrderDateTime(event.time)}</div>
+                </div>
+                <div className="mt-1 text-slate-600">{event.description}</div>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-xl bg-white p-4 text-sm text-slate-500">
+            当前订单暂无可展示的溯源链节点。
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const INITIAL_COMPLAINT_STATE = {
   type: DIRECT_COMPLAINT_TYPES[0].value,
   reason: "",
@@ -170,6 +404,7 @@ export default function OrderCenter() {
   const [sellerResponseForms, setSellerResponseForms] = useState({});
   const [afterSalesRequestResponseForms, setAfterSalesRequestResponseForms] = useState({});
   const [afterSalesForms, setAfterSalesForms] = useState({});
+  const [expandedTraceOrders, setExpandedTraceOrders] = useState({});
 
   const navigate = useNavigate();
 
@@ -244,6 +479,13 @@ export default function OrderCenter() {
     setAfterSalesForms((previous) => ({
       ...previous,
       [orderId]: INITIAL_AFTER_SALES_FORM,
+    }));
+  };
+
+  const toggleOrderTrace = (orderId) => {
+    setExpandedTraceOrders((previous) => ({
+      ...previous,
+      [orderId]: !previous[orderId],
     }));
   };
 
@@ -496,6 +738,8 @@ export default function OrderCenter() {
           const shipmentForm = shipmentForms[order.id] || { trackingNumber: "", shippingCarrier: "" };
           const sellerResponse = sellerResponseForms[order.id] || "";
           const afterSalesForm = afterSalesForms[order.id] || INITIAL_AFTER_SALES_FORM;
+          const productTraceId = getProductTraceId(order);
+          const isTraceExpanded = Boolean(expandedTraceOrders[order.id]);
           const afterSalesRequests = Array.isArray(order.afterSalesRequests)
             ? order.afterSalesRequests
             : [];
@@ -532,8 +776,31 @@ export default function OrderCenter() {
                     {getOrderStatusLabel(order)}
                   </span>
                   <span className="text-xs text-slate-500">物流：{getShippingLabel(order)}</span>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {productTraceId ? (
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/trace?productId=${encodeURIComponent(productTraceId)}`)}
+                        className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                      >
+                        Product trace
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => toggleOrderTrace(order.id)}
+                      className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+                    >
+                      {isTraceExpanded ? "Hide order trace" : "Order trace"}
+                    </button>
+                  </div>
                 </div>
               </div>
+
+
+              {isTraceExpanded ? (
+                <OrderTracePanel order={order} currentUser={currentUser} />
+              ) : null}
 
               <div className="grid gap-4 text-sm md:grid-cols-3">
                 <div className="rounded-xl bg-slate-50 p-3">

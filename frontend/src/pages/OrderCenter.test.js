@@ -249,10 +249,10 @@ test("order center shows payment and refund states", async () => {
     expect(ProductService.getMyOrders).toHaveBeenCalled();
   });
 
-  expect(screen.getByText("Payment status")).toBeInTheDocument();
-  expect(screen.getByText("Refunded")).toBeInTheDocument();
+  expect(screen.getByText("Order trace")).toBeInTheDocument();
+  expect(screen.getAllByText("已退款").length).toBeGreaterThan(0);
   expect(screen.getByText("CHAIN_ORDER_12")).toBeInTheDocument();
-  expect(screen.getByText("Refund amount")).toBeInTheDocument();
+  expect(screen.getByText("退款金额")).toBeInTheDocument();
   expect(screen.getByText("1.8 ETH")).toBeInTheDocument();
 });
 
@@ -288,8 +288,12 @@ test("buyer can acknowledge a recall notification from order center", async () =
     expect(ProductService.getMyOrders).toHaveBeenCalled();
   });
 
-  expect(screen.getByText("Recall notice")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Acknowledge recall" }));
+  expect(screen.getByText("Order trace")).toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: (_name, element) => element.textContent === "\u786e\u8ba4\u5df2\u77e5\u6089",
+    })
+  );
 
   await waitFor(() => {
     expect(ProductService.updateRecallNotificationStatus).toHaveBeenCalledWith(
@@ -297,4 +301,80 @@ test("buyer can acknowledge a recall notification from order center", async () =
       "acknowledged"
     );
   });
+});
+
+test("order center can expand order trace chain and open product trace", async () => {
+  AuthService.getCurrentUser.mockReturnValue({ id: 10, role: "buyer" });
+  ProductService.getMyOrders.mockResolvedValue({
+    data: [
+      {
+        id: 31,
+        product: {
+          id: 101,
+          name: "Trace Phone",
+          brand: "OpenAI Devices",
+          model: "TP-1",
+          seller: { username: "seller_trace" },
+          recallReason: "Battery overheating risk",
+        },
+        price: 1.8,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        paidAt: "2026-01-01T01:00:00.000Z",
+        paymentStatus: "paid",
+        paymentReference: "CHAIN_ORDER_31",
+        status: 2,
+        shippingStatus: "delivered",
+        trackingNumber: "SF123",
+        shippingCarrier: "SF Express",
+        shippedAt: "2026-01-01T08:00:00.000Z",
+        recallNotifications: [
+          {
+            id: 310,
+            status: "pending",
+            notifiedAt: "2026-01-03T00:00:00.000Z",
+          },
+        ],
+        afterSalesRequests: [
+          {
+            id: 311,
+            type: "repair",
+            status: "seller_responded",
+            description: "Battery heats up after charging.",
+            sellerResponse: "We will inspect the battery.",
+            createdAt: "2026-01-04T00:00:00.000Z",
+          },
+        ],
+        afterSalesRecords: [
+          {
+            id: 312,
+            type: "repair",
+            componentName: "Battery Pack",
+            description: "Battery pack replaced.",
+            serviceResult: "Repaired",
+            createdAt: "2026-01-05T00:00:00.000Z",
+          },
+        ],
+      },
+    ],
+  });
+
+  render(<OrderCenter />);
+
+  await waitFor(() => {
+    expect(ProductService.getMyOrders).toHaveBeenCalled();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Order trace" }));
+
+  expect(screen.getByText("订单级溯源链")).toBeInTheDocument();
+  expect(screen.getByText("订单创建")).toBeInTheDocument();
+  expect(screen.getByText("支付记录")).toBeInTheDocument();
+  expect(screen.getByText("发货物流")).toBeInTheDocument();
+  expect(screen.getAllByText("召回通知").length).toBeGreaterThan(0);
+  expect(screen.getByText("买家售后申请")).toBeInTheDocument();
+  expect(screen.getByText("售后服务记录")).toBeInTheDocument();
+  expect(screen.getAllByText(/Battery pack replaced/).length).toBeGreaterThan(0);
+
+  fireEvent.click(screen.getByRole("button", { name: "Product trace" }));
+  expect(mockNavigate).toHaveBeenCalledWith("/trace?productId=101");
 });

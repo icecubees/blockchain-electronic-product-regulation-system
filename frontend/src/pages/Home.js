@@ -119,6 +119,15 @@ const USER_STATUS_OPTIONS = [
   { value: "2", label: "已冻结" },
 ];
 
+const REGULATOR_NAV_ITEMS = [
+  { key: "dashboard", label: "监管看板", description: "查看平台风险总览与审计信息" },
+  { key: "complaints", label: "投诉处理", description: "集中处理买家投诉与监管裁决" },
+  { key: "reviews", label: "审核队列", description: "审核待上架商品与商家申请" },
+  { key: "blacklist", label: "黑名单商家", description: "管理已列入黑名单的卖家" },
+  { key: "users", label: "用户治理", description: "冻结、解冻和筛查平台用户" },
+  { key: "market", label: "市场商品", description: "查看和干预平台商品流通情况" },
+];
+
 function isRegulatorUser(user) {
   return user?.role === "regulator" || user?.role === "admin";
 }
@@ -254,6 +263,7 @@ export default function Home() {
   const [purchaseModal, setPurchaseModal] = useState(INITIAL_PURCHASE_MODAL);
   const [delistModal, setDelistModal] = useState(INITIAL_DELIST_MODAL);
   const [recallModal, setRecallModal] = useState(INITIAL_RECALL_MODAL);
+  const [activeRegulatorSection, setActiveRegulatorSection] = useState("dashboard");
 
   const isRegulator = isRegulatorUser(currentUser);
 
@@ -734,7 +744,9 @@ export default function Home() {
     return currentUser.role === "seller" && product?.seller?.id === currentUser.id;
   };
 
-  const marketSummaryText = `当前页 ${products.length} 件，共 ${marketPagination.total} 件`;
+  const marketSummaryText = `Current page ${products.length} items, ${marketPagination.total} total`;
+  const activeRegulatorNav =
+    REGULATOR_NAV_ITEMS.find((item) => item.key === activeRegulatorSection) || REGULATOR_NAV_ITEMS[0];
 
   return (
     <div className="min-h-screen bg-slate-100 pb-10">
@@ -801,10 +813,74 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-8">
+      <main className="mx-auto max-w-7xl px-4 py-8">
+        <div className={isRegulator ? "grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]" : "space-y-6"}>
+          {isRegulator && (
+            <aside className="h-fit rounded-3xl bg-slate-900 p-4 text-white shadow-lg lg:sticky lg:top-6">
+              <div className="border-b border-white/10 pb-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">
+                  Regulator Console
+                </div>
+                <h2 className="mt-2 text-xl font-bold">监管方工作台</h2>
+                <p className="mt-2 text-sm text-slate-300">
+                  点击左侧模块可快速定位到对应监管项目。
+                </p>
+              </div>
+
+              <nav className="mt-4 space-y-2">
+                {REGULATOR_NAV_ITEMS.map((item) => {
+                  const isActive = item.key === activeRegulatorSection;
+
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => {
+                        setActiveRegulatorSection(item.key);
+                        const section = document.getElementById(`regulator-section-${item.key}`);
+                        if (section) {
+                          section.scrollIntoView({ behavior: "smooth", block: "start" });
+                        }
+                      }}
+                      className={`w-full rounded-2xl px-4 py-3 text-left transition ${
+                        isActive
+                          ? "bg-white text-slate-900 shadow"
+                          : "bg-white/5 text-slate-100 hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="text-sm font-semibold">{item.label}</div>
+                      <div className={`mt-1 text-xs ${isActive ? "text-slate-500" : "text-slate-300"}`}>
+                        {item.description}
+                      </div>
+                    </button>
+                  );
+                })}
+              </nav>
+            </aside>
+          )}
+
+          <div className="space-y-6">
         {isRegulator && (
           <>
-            <Dashboard
+            <section id="regulator-section-dashboard" className="scroll-mt-6">
+              <div className="rounded-3xl bg-white p-6 shadow">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                      当前模块
+                    </p>
+                    <h2 className="mt-2 text-2xl font-bold text-slate-900">
+                      {activeRegulatorNav.label}
+                    </h2>
+                    <p className="mt-2 text-sm text-slate-500">{activeRegulatorNav.description}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-600">
+                    当前监管员：{currentUser?.username || "--"}
+                  </div>
+                </div>
+              </div>
+
+              <Dashboard
               products={products}
               pendingProducts={pendingProducts}
               complaints={complaints}
@@ -818,9 +894,10 @@ export default function Home() {
               onAuditLogSearch={applyAuditLogFilters}
               onAuditLogReset={resetAuditLogFilters}
               onAuditLogPageChange={gotoAuditLogPage}
-            />
+              />
+            </section>
 
-            <section className="rounded-3xl bg-white p-6 shadow">
+            <section id="regulator-section-complaints" className="scroll-mt-6 rounded-3xl bg-white p-6 shadow">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">投诉处理区</h2>
@@ -987,7 +1064,7 @@ export default function Home() {
               )}
             </section>
 
-            <section className="rounded-3xl bg-white p-6 shadow">
+            <section id="regulator-section-reviews" className="scroll-mt-6 rounded-3xl bg-white p-6 shadow">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">待审核商品筛查</h2>
@@ -1056,13 +1133,15 @@ export default function Home() {
               />
             </section>
 
-            <BlacklistSellerManager
-              sellers={blacklistedSellers}
-              loading={loading}
-              onRestore={handleRestoreSeller}
-            />
+            <section id="regulator-section-blacklist" className="scroll-mt-6">
+              <BlacklistSellerManager
+                sellers={blacklistedSellers}
+                loading={loading}
+                onRestore={handleRestoreSeller}
+              />
+            </section>
 
-            <section className="rounded-3xl bg-white p-6 shadow">
+            <section id="regulator-section-users" className="scroll-mt-6 rounded-3xl bg-white p-6 shadow">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">用户治理</h2>
@@ -1190,7 +1269,7 @@ export default function Home() {
           </>
         )}
 
-        <section className="rounded-3xl bg-white p-6 shadow">
+        <section id="regulator-section-market" className="scroll-mt-6 rounded-3xl bg-white p-6 shadow">
           <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
             <div>
               <h2 className="text-xl font-bold text-slate-900">市场商品</h2>
@@ -1446,6 +1525,8 @@ export default function Home() {
             </div>
           </div>
         </section>
+          </div>
+        </div>
       </main>
 
       {qrProduct && (

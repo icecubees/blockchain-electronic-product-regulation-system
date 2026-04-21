@@ -120,7 +120,7 @@ test("regulator can freeze a manageable user from governance panel", async () =>
 
   render(<Home />);
 
-  expect(await screen.findByText("用户治理")).toBeInTheDocument();
+  expect(await screen.findByText("Regulator Console")).toBeInTheDocument();
   expect(await screen.findByText(/buyer_demo/)).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "冻结" }));
