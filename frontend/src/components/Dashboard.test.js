@@ -69,6 +69,7 @@ test("renders live summary stats and audit log details", () => {
             trackingNumber: "SF123456789",
             shippingCarrier: "SF Express",
           }),
+          txHash: `0x${"a".repeat(64)}`,
           createdAt: "2026-04-14T10:00:00.000Z",
         },
       ]}
@@ -83,6 +84,10 @@ test("renders live summary stats and audit log details", () => {
   expect(screen.getByText("regulator_demo")).toBeInTheDocument();
   expect(screen.getByText(/SF123456789/)).toBeInTheDocument();
   expect(screen.getByText("审计日志中心")).toBeInTheDocument();
+  expect(screen.getByText("链上凭证流")).toBeInTheDocument();
+  expect(screen.getAllByText("合约事件：OrderShipped").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("审计记录 #101").length).toBeGreaterThan(0);
+  expect(screen.getAllByText(/0xaaaaaaaa/).length).toBeGreaterThan(0);
 });
 
 test("supports audit log filters, reset, and pagination callbacks", () => {

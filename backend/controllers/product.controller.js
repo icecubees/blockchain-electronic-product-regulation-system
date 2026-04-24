@@ -4,11 +4,13 @@ const FormData = require("form-data");
 const db = require("../models");
 const auditService = require("../services/audit.service");
 const integrationJobService = require("../services/integration-job.service");
+const settingService = require("../services/system-setting.service");
 const { syncSellerBlacklist } = require("../services/seller-blacklist.service");
 const {
   web3,
   contract,
   accounts,
+  CONTRACT_ADDRESS,
   sendContractTransaction,
 } = require("../services/chain.service");
 
@@ -73,6 +75,11 @@ const AFTER_SALES_REQUEST_STATUSES = new Set([
   "closed",
 ]);
 const RECALL_NOTIFICATION_STATUSES = new Set(["pending", "viewed", "acknowledged", "closed"]);
+const PRIVILEGED_ROLE = "regulator";
+
+function isPrivilegedUserRole(role) {
+  return role === PRIVILEGED_ROLE;
+}
 
 function normalizeOptionalString(value, fallback = null) {
   if (value === undefined) {
@@ -598,6 +605,21 @@ async function callAiAuditService(description, uploadedFile, productPayload = nu
 
 function isAiServiceUnavailable(aiAssessment) {
   return Boolean(aiAssessment?.serviceUnavailable);
+}
+
+function buildAiDisabledAssessment() {
+  return {
+    label: "DISABLED",
+    result: "DISABLED",
+    confidence: 0,
+    passProbability: 0,
+    reasonHints: [],
+    modelVersion: null,
+    shouldBlock: false,
+    requiresManualReview: true,
+    isApprovedLike: true,
+    disabledByRegulator: true,
+  };
 }
 
 function signAiAuditResult(productId, isPass) {
@@ -1158,6 +1180,50 @@ function getOrderChainId(order) {
   return order.onChainId > 0 ? order.onChainId : order.id;
 }
 
+function addressesEqual(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  return String(left).toLowerCase() === String(right).toLowerCase();
+}
+
+function getOrderCreatedEventAbi() {
+  return (contract?.options?.jsonInterface || []).find(
+    (item) => item.type === "event" && item.name === "OrderCreated"
+  );
+}
+
+function getContractEventAbi(eventName) {
+  return (contract?.options?.jsonInterface || []).find(
+    (item) => item.type === "event" && item.name === eventName
+  );
+}
+
+function decodeContractEvent(receipt, eventName) {
+  const eventAbi = getContractEventAbi(eventName);
+  if (!eventAbi || !receipt?.logs) {
+    return null;
+  }
+
+  const signature = web3.eth.abi.encodeEventSignature(eventAbi);
+  const eventLog = receipt.logs.find(
+    (log) =>
+      addressesEqual(log.address, CONTRACT_ADDRESS) &&
+      Array.isArray(log.topics) &&
+      addressesEqual(log.topics[0], signature)
+  );
+
+  if (!eventLog) {
+    return null;
+  }
+
+  return web3.eth.abi.decodeLog(eventAbi.inputs, eventLog.data, eventLog.topics.slice(1));
+}
+
+function decodeOrderCreatedEvent(receipt) {
+  return decodeContractEvent(receipt, "OrderCreated");
+}
+
 function getUpdateLock(transaction) {
   return transaction?.LOCK?.UPDATE;
 }
@@ -1493,7 +1559,7 @@ exports.getMyProducts = async (req, res) => {
 
 exports.addProduct = async (req, res) => {
   try {
-    const { name, price, description, ipfsHash, qualificationHash, stock } = req.body;
+    const { name, price, description, ipfsHash, qualificationHash, stock, sellerWallet } = req.body;
     const seller = await User.findByPk(req.userId);
     const electronicFields = buildElectronicProductFields(req.body);
     const electronicValidationError = validateElectronicFields(electronicFields);
@@ -1515,11 +1581,26 @@ exports.addProduct = async (req, res) => {
       return res.status(400).send({ message: electronicValidationError });
     }
 
-    const aiAssessment = await callAiAuditService(description || "", req.file, {
-      name,
-      description,
-      ...electronicFields,
-    });
+    const currentSellerWallet = sellerWallet || (seller.walletBound ? seller.ethAddress : null);
+    if (!currentSellerWallet || !web3.utils.isAddress(currentSellerWallet)) {
+      return res.status(400).send({ message: "Valid seller wallet is required" });
+    }
+    if (!addressesEqual(seller.ethAddress, currentSellerWallet)) {
+      seller.ethAddress = currentSellerWallet;
+    }
+    seller.walletBound = true;
+    if (typeof seller.save === "function") {
+      await seller.save();
+    }
+
+    const aiAuditEnabled = await settingService.isAiAuditEnabled();
+    const aiAssessment = aiAuditEnabled
+      ? await callAiAuditService(description || "", req.file, {
+          name,
+          description,
+          ...electronicFields,
+        })
+      : buildAiDisabledAssessment();
     const degradedToManualReview = isAiServiceUnavailable(aiAssessment);
 
     if (aiAssessment.shouldBlock) {
@@ -1532,7 +1613,7 @@ exports.addProduct = async (req, res) => {
         stock: parseInt(stock, 10),
         sellerId: seller.id,
         auditStatus: 2,
-        auditReason: "AI pre-audit marked this product as FAIL.",
+        auditReason: "AI 预审核判定该商品未通过。",
         onChainId: 0,
         txHash: "AI_REJECTED",
         ...electronicFields,
@@ -1556,7 +1637,7 @@ exports.addProduct = async (req, res) => {
       });
 
       return res.send({
-        message: "AI pre-audit marked this product as FAIL.",
+        message: "AI 预审核判定该商品未通过。",
         aiAssessment,
         product: rejectedProduct,
       });
@@ -1573,7 +1654,7 @@ exports.addProduct = async (req, res) => {
           stock: parseInt(stock, 10),
           ...electronicFields,
         },
-        seller.ethAddress
+        currentSellerWallet
       ),
       gas: 2000000,
     });
@@ -1589,7 +1670,9 @@ exports.addProduct = async (req, res) => {
       sellerId: seller.id,
       auditStatus: 0,
       auditReason: degradedToManualReview
-        ? "AI service unavailable. Routed to manual review."
+        ? "AI 服务暂不可用，已转入人工审核。"
+        : !aiAuditEnabled
+        ? "监督方已关闭 AI 预审核，已转入人工审核。"
         : null,
       txHash: receipt.transactionHash,
       onChainId: chainProductId,
@@ -1612,10 +1695,27 @@ exports.addProduct = async (req, res) => {
         aiPassProbability: aiAssessment.passProbability,
         aiReasonHints: aiAssessment.reasonHints,
         aiModelVersion: aiAssessment.modelVersion,
+        aiAuditEnabled,
       },
       req,
       txHash: receipt.transactionHash,
     });
+
+    if (!aiAuditEnabled) {
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_AI_SKIPPED_BY_SETTING",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          source: "create",
+          name,
+          reason: "监督方已关闭 AI 预审核",
+        },
+        req,
+      });
+    }
 
     if (degradedToManualReview) {
       await auditService.record({
@@ -1627,7 +1727,7 @@ exports.addProduct = async (req, res) => {
         details: {
           source: "create",
           name,
-          reason: "AI service unavailable",
+          reason: "AI 服务暂不可用",
         },
         req,
       });
@@ -1635,10 +1735,12 @@ exports.addProduct = async (req, res) => {
 
     res.send({
       message: degradedToManualReview
-        ? "AI pre-audit is temporarily unavailable. Routed to manual review."
+        ? "AI 预审核暂不可用，商品已转入人工审核。"
+        : !aiAuditEnabled
+        ? "监督方已关闭 AI 预审核，商品已转入人工审核。"
         : aiAssessment.requiresManualReview
-        ? "AI pre-audit marked this product for manual review. Waiting for regulator review."
-        : "AI pre-audit passed. Waiting for regulator review.",
+        ? "AI 预审核建议人工复核，等待监督方审核。"
+        : "AI 预审核通过，等待监督方审核。",
       aiAssessment,
       product,
     });
@@ -1773,11 +1875,11 @@ exports.delistProduct = async (req, res) => {
         return { status: 404, body: { message: "Product not found" } };
       }
 
-      const isRegulator = req.user.role === "admin" || req.user.role === "regulator";
+      const isRegulator = isPrivilegedUserRole(req.user.role);
       const isSellerOwner = req.user.role === "seller" && req.user.id === product.sellerId;
 
       if (!isRegulator && !isSellerOwner) {
-        await auditService.recordAccessDenied(req, ["seller(owner)", "regulator", "admin"]);
+        await auditService.recordAccessDenied(req, ["seller(owner)", PRIVILEGED_ROLE]);
         return { status: 403, body: { message: "No permission to delist this product" } };
       }
 
@@ -2033,7 +2135,16 @@ exports.restockProduct = async (req, res) => {
 
 exports.resubmitProduct = async (req, res) => {
   try {
-    const { productId, name, price, description, ipfsHash, qualificationHash, stock } = req.body;
+    const {
+      productId,
+      name,
+      price,
+      description,
+      ipfsHash,
+      qualificationHash,
+      stock,
+      sellerWallet,
+    } = req.body;
     const product = await Product.findByPk(productId);
 
     if (!product) {
@@ -2081,11 +2192,26 @@ exports.resubmitProduct = async (req, res) => {
       return res.status(400).send({ message: electronicValidationError });
     }
 
-    const aiAssessment = await callAiAuditService(nextDescription, null, {
-      name: nextName,
-      description: nextDescription,
-      ...nextElectronicFields,
-    });
+    const currentSellerWallet = sellerWallet || (seller.walletBound ? seller.ethAddress : null);
+    if (!currentSellerWallet || !web3.utils.isAddress(currentSellerWallet)) {
+      return res.status(400).send({ message: "Valid seller wallet is required" });
+    }
+    if (!addressesEqual(seller.ethAddress, currentSellerWallet)) {
+      seller.ethAddress = currentSellerWallet;
+    }
+    seller.walletBound = true;
+    if (typeof seller.save === "function") {
+      await seller.save();
+    }
+
+    const aiAuditEnabled = await settingService.isAiAuditEnabled();
+    const aiAssessment = aiAuditEnabled
+      ? await callAiAuditService(nextDescription, null, {
+          name: nextName,
+          description: nextDescription,
+          ...nextElectronicFields,
+        })
+      : buildAiDisabledAssessment();
     const degradedToManualReview = isAiServiceUnavailable(aiAssessment);
     if (aiAssessment.shouldBlock) {
       product.name = nextName;
@@ -2096,7 +2222,7 @@ exports.resubmitProduct = async (req, res) => {
       product.qualificationHash = nextQualificationHash;
       Object.assign(product, nextElectronicFields);
       product.auditStatus = 2;
-      product.auditReason = "AI pre-audit marked this resubmission as FAIL.";
+      product.auditReason = "AI 预审核判定本次重新提交未通过。";
       await product.save();
 
       await auditService.record({
@@ -2117,7 +2243,7 @@ exports.resubmitProduct = async (req, res) => {
       });
 
       return res.status(400).send({
-        message: "AI pre-audit marked this resubmission as FAIL.",
+        message: "AI 预审核判定本次重新提交未通过。",
         aiAssessment,
         product,
       });
@@ -2134,7 +2260,7 @@ exports.resubmitProduct = async (req, res) => {
           stock: nextStock,
           ...nextElectronicFields,
         },
-        seller.ethAddress
+        currentSellerWallet
       ),
       gas: 2000000,
     });
@@ -2150,8 +2276,10 @@ exports.resubmitProduct = async (req, res) => {
     Object.assign(product, nextElectronicFields);
     product.auditStatus = 0;
     product.auditReason = degradedToManualReview
-      ? "AI service unavailable. Routed to manual review."
-      : "Product resubmitted. Waiting for regulator review.";
+      ? "AI 服务暂不可用，已转入人工审核。"
+      : !aiAuditEnabled
+      ? "监督方已关闭 AI 预审核，已转入人工审核。"
+      : "商品已重新提交，等待监督方审核。";
     product.auditBy = null;
     product.auditAt = null;
     product.delistReason = null;
@@ -2176,10 +2304,27 @@ exports.resubmitProduct = async (req, res) => {
         aiPassProbability: aiAssessment.passProbability,
         aiReasonHints: aiAssessment.reasonHints,
         aiModelVersion: aiAssessment.modelVersion,
+        aiAuditEnabled,
       },
       req,
       txHash: receipt.transactionHash,
     });
+
+    if (!aiAuditEnabled) {
+      await auditService.record({
+        operator: req.user,
+        action: "PRODUCT_AI_SKIPPED_BY_SETTING",
+        targetType: "PRODUCT",
+        targetId: product.id,
+        result: "SUCCESS",
+        details: {
+          source: "resubmit",
+          name: nextName,
+          reason: "监督方已关闭 AI 预审核",
+        },
+        req,
+      });
+    }
 
     if (degradedToManualReview) {
       await auditService.record({
@@ -2191,7 +2336,7 @@ exports.resubmitProduct = async (req, res) => {
         details: {
           source: "resubmit",
           name: nextName,
-          reason: "AI service unavailable",
+          reason: "AI 服务暂不可用",
         },
         req,
       });
@@ -2206,10 +2351,12 @@ exports.resubmitProduct = async (req, res) => {
 
     return res.send({
       message: degradedToManualReview
-        ? "AI pre-audit is temporarily unavailable. Routed this resubmission to manual review."
+        ? "AI 预审核暂不可用，本次重新提交已转入人工审核。"
+        : !aiAuditEnabled
+        ? "监督方已关闭 AI 预审核，本次重新提交已转入人工审核。"
         : aiAssessment.requiresManualReview
-        ? "AI pre-audit marked this resubmission for manual review. Waiting for regulator review."
-        : "Product resubmitted successfully. Waiting for regulator review.",
+        ? "AI 预审核建议人工复核，等待监督方审核。"
+        : "商品重新提交成功，等待监督方审核。",
       aiAssessment,
       product,
     });
@@ -2226,29 +2373,29 @@ exports.purchaseProduct = async (req, res) => {
     const buyer = await User.findByPk(req.userId);
 
     if (!buyer) {
-      return res.status(404).send({ message: "Buyer not found" });
+      return res.status(404).send({ message: "买家不存在" });
     }
 
     const result = await withTransaction(async (transaction) => {
       const product = await findProductForUpdate(productId, transaction);
 
       if (!product) {
-        return { status: 404, body: { message: "Product not found" } };
+        return { status: 404, body: { message: "商品不存在" } };
       }
       if (product.auditStatus !== 1) {
-        return { status: 400, body: { message: "Product is not available for purchase" } };
+        return { status: 400, body: { message: "商品当前不可购买" } };
       }
       if (product.recallStatus) {
-        return { status: 400, body: { message: "Recalled products cannot be purchased" } };
+        return { status: 400, body: { message: "已召回商品不可购买" } };
       }
       if (product.stock <= 0) {
-        return { status: 400, body: { message: "Out of stock" } };
+        return { status: 400, body: { message: "商品库存不足" } };
       }
 
       const seller = await User.findByPk(product.sellerId);
       const sellerSync = await syncSellerBlacklist(seller);
       if (sellerSync.isBlacklisted) {
-        return { status: 400, body: { message: "Seller is blacklisted" } };
+        return { status: 400, body: { message: "卖家已被列入黑名单" } };
       }
 
       const chainId = product.onChainId > 0 ? product.onChainId : product.id;
@@ -2262,6 +2409,7 @@ exports.purchaseProduct = async (req, res) => {
         account: accounts.market,
         method: contract.methods.purchaseProduct(chainId, buyer.ethAddress),
         gas: 1200000,
+        value: web3.utils.toWei(String(product.price), "ether"),
       });
 
       const chainOrderId = parseInt(await contract.methods.orderCount().call(), 10);
@@ -2275,7 +2423,7 @@ exports.purchaseProduct = async (req, res) => {
           price: product.price,
           status: 0,
           paymentStatus: "paid",
-          paymentMethod: "platform_simulated",
+          paymentMethod: "contract_escrow",
           paymentReference: `CHAIN_ORDER_${chainOrderId}`,
           paidAt: purchaseJobPayload.paidAt,
           refundStatus: "none",
@@ -2319,7 +2467,7 @@ exports.purchaseProduct = async (req, res) => {
 
       return {
         status: 200,
-        body: { message: "Purchase successful" },
+        body: { message: "购买成功" },
       };
     });
 
@@ -2336,7 +2484,302 @@ exports.purchaseProduct = async (req, res) => {
       });
     }
     console.error(error);
-    res.status(500).send({ message: "Purchase failed: " + error.message });
+    res.status(500).send({ message: "购买失败：" + error.message });
+  }
+};
+
+exports.prepareWalletPurchase = async (req, res) => {
+  try {
+    const productId = req.params.productId || req.body.productId;
+    const buyer = await User.findByPk(req.userId);
+
+    if (!buyer) {
+      return res.status(404).send({ message: "买家不存在" });
+    }
+
+    const product = await Product.findByPk(productId);
+    if (!product) {
+      return res.status(404).send({ message: "商品不存在" });
+    }
+    if (product.auditStatus !== 1) {
+      return res.status(400).send({ message: "商品当前不可购买" });
+    }
+    if (product.recallStatus) {
+      return res.status(400).send({ message: "已召回商品不可购买" });
+    }
+    if (product.stock <= 0) {
+      return res.status(400).send({ message: "商品库存不足" });
+    }
+
+    const seller = await User.findByPk(product.sellerId);
+    const sellerSync = await syncSellerBlacklist(seller);
+    if (sellerSync.isBlacklisted) {
+      return res.status(400).send({ message: "卖家已被列入黑名单" });
+    }
+
+    const chainProductId = product.onChainId > 0 ? product.onChainId : product.id;
+    const method = contract.methods.purchaseProductFromWallet(chainProductId);
+
+    return res.status(200).send({
+      contractAddress: CONTRACT_ADDRESS,
+      data: method.encodeABI(),
+      value: web3.utils.toWei(String(product.price), "ether"),
+      chainProductId,
+      productId: product.id,
+      price: product.price,
+      currentUserWallet: buyer.walletBound ? buyer.ethAddress : null,
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.finalizeWalletPurchase = async (req, res) => {
+  try {
+    const { productId, txHash } = req.body;
+
+    if (!productId || !txHash) {
+      return res.status(400).send({ message: "商品和交易哈希不能为空" });
+    }
+
+    const buyer = await User.findByPk(req.userId);
+    if (!buyer) {
+      return res.status(404).send({ message: "买家不存在" });
+    }
+
+    const receipt = await web3.eth.getTransactionReceipt(txHash);
+    if (!receipt) {
+      return res.status(404).send({ message: "未找到链上交易回执" });
+    }
+    if (!receipt.status) {
+      return res.status(400).send({ message: "钱包购买交易在链上执行失败" });
+    }
+    if (!addressesEqual(receipt.to, CONTRACT_ADDRESS)) {
+      return res.status(400).send({ message: "交易未发送到托管合约" });
+    }
+
+    const orderEvent = decodeOrderCreatedEvent(receipt);
+    if (!orderEvent) {
+      return res.status(400).send({ message: "交易中未找到订单创建事件" });
+    }
+    if (!addressesEqual(receipt.from, orderEvent.buyer)) {
+      return res.status(400).send({ message: "交易发起钱包与订单买家不一致" });
+    }
+
+    const chainOrderId = parseInt(orderEvent.orderId, 10);
+    const chainProductId = parseInt(orderEvent.productId, 10);
+    const chainBuyer = orderEvent.buyer;
+
+    const result = await withTransaction(async (transaction) => {
+      const product = await findProductForUpdate(productId, transaction);
+      if (!product) {
+        return { status: 404, body: { message: "商品不存在" } };
+      }
+
+      const expectedChainProductId = product.onChainId > 0 ? product.onChainId : product.id;
+      if (Number(expectedChainProductId) !== Number(chainProductId)) {
+        return { status: 400, body: { message: "交易商品与请求商品不一致" } };
+      }
+
+      let order = await Order.findOne({
+        where: { onChainId: chainOrderId },
+        transaction,
+      });
+
+      if (!addressesEqual(buyer.ethAddress, chainBuyer)) {
+        buyer.ethAddress = chainBuyer;
+      }
+      buyer.walletBound = true;
+      if (typeof buyer.save === "function") {
+        await buyer.save({ transaction });
+      }
+
+      if (!order) {
+        order = await Order.create(
+          {
+            productId: product.id,
+            buyerId: buyer.id,
+            price: product.price,
+            status: 0,
+            paymentStatus: "paid",
+            paymentMethod: "metamask_contract_escrow",
+            paymentReference: `CHAIN_ORDER_${chainOrderId}`,
+            paidAt: new Date(),
+            refundStatus: "none",
+            refundAmount: 0,
+            refundedAt: null,
+            shippingStatus: "pending",
+            onChainId: chainOrderId,
+          },
+          { transaction }
+        );
+
+        product.stock = Math.max(Number(product.stock) - 1, 0);
+        await product.save({ transaction });
+
+        await auditService.record({
+          operator: req.user,
+          action: "PRODUCT_PURCHASED",
+          targetType: "PRODUCT",
+          targetId: product.id,
+          result: "SUCCESS",
+          details: { chainOrderId, paymentMethod: "metamask_contract_escrow" },
+          req,
+          txHash,
+        });
+
+        await auditService.record({
+          operator: req.user,
+          action: "ORDER_PAYMENT_RECORDED",
+          targetType: "ORDER",
+          targetId: order.id,
+          result: "SUCCESS",
+          details: {
+            paymentStatus: order.paymentStatus,
+            paymentMethod: order.paymentMethod,
+            paymentReference: order.paymentReference,
+            wallet: chainBuyer,
+          },
+          req,
+          txHash,
+        });
+      }
+
+      return {
+        status: 200,
+        body: {
+          message: "Wallet purchase finalized",
+          orderId: order.id,
+          chainOrderId,
+          txHash,
+        },
+      };
+    });
+
+    return res.status(result.status).send(result.body);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.prepareWalletConfirmReceipt = async (req, res) => {
+  try {
+    const orderId = req.params.orderId || req.body.orderId;
+    const order = await Order.findByPk(orderId);
+    const buyer = await User.findByPk(req.userId);
+
+    if (!order || !buyer) {
+      return res.status(404).send({ message: "订单不存在" });
+    }
+    if (order.buyerId !== buyer.id) {
+      await auditService.recordAccessDenied(req, ["buyer(owner)"]);
+      return res.status(403).send({ message: "只能确认自己的订单" });
+    }
+    if (order.status !== 0) {
+      return res.status(400).send({ message: "仅托管中的订单可以确认收货" });
+    }
+    if (order.shippingStatus === "pending") {
+      return res.status(400).send({ message: "卖家尚未发货" });
+    }
+
+    const chainOrderId = getOrderChainId(order);
+    const method = contract.methods.confirmReceiptFromWallet(chainOrderId);
+
+    return res.status(200).send({
+      contractAddress: CONTRACT_ADDRESS,
+      data: method.encodeABI(),
+      value: "0",
+      orderId: order.id,
+      chainOrderId,
+      currentUserWallet: buyer.walletBound ? buyer.ethAddress : null,
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.finalizeWalletConfirmReceipt = async (req, res) => {
+  try {
+    const { orderId, txHash } = req.body;
+
+    if (!orderId || !txHash) {
+      return res.status(400).send({ message: "订单和交易哈希不能为空" });
+    }
+
+    const order = await Order.findByPk(orderId);
+    const buyer = await User.findByPk(req.userId);
+
+    if (!order || !buyer) {
+      return res.status(404).send({ message: "订单不存在" });
+    }
+    if (order.buyerId !== buyer.id) {
+      await auditService.recordAccessDenied(req, ["buyer(owner)"]);
+      return res.status(403).send({ message: "只能确认自己的订单" });
+    }
+    if (order.shippingStatus === "pending") {
+      return res.status(400).send({ message: "卖家尚未发货" });
+    }
+
+    const receipt = await web3.eth.getTransactionReceipt(txHash);
+    if (!receipt) {
+      return res.status(404).send({ message: "未找到链上交易回执" });
+    }
+    if (!receipt.status) {
+      return res.status(400).send({ message: "钱包确认收货交易在链上执行失败" });
+    }
+    if (!addressesEqual(receipt.to, CONTRACT_ADDRESS)) {
+      return res.status(400).send({ message: "交易未发送到托管合约" });
+    }
+
+    const orderConfirmedEvent = decodeContractEvent(receipt, "OrderConfirmed");
+    if (!orderConfirmedEvent) {
+      return res.status(400).send({ message: "交易中未找到确认收货事件" });
+    }
+
+    const chainOrderId = getOrderChainId(order);
+    if (Number(orderConfirmedEvent.orderId) !== Number(chainOrderId)) {
+      return res.status(400).send({ message: "交易订单与请求订单不一致" });
+    }
+    if (!addressesEqual(receipt.from, orderConfirmedEvent.buyer)) {
+      return res.status(400).send({ message: "交易发起钱包与订单买家不一致" });
+    }
+
+    const chainOrder = await contract.methods.orders(chainOrderId).call();
+    if (!addressesEqual(chainOrder.buyer, receipt.from)) {
+      return res.status(400).send({ message: "当前钱包不是链上订单买家" });
+    }
+    if (String(chainOrder.state) !== "1") {
+      return res.status(400).send({ message: "链上订单尚未释放资金" });
+    }
+
+    if (!addressesEqual(buyer.ethAddress, receipt.from)) {
+      buyer.ethAddress = receipt.from;
+    }
+    buyer.walletBound = true;
+    if (typeof buyer.save === "function") {
+      await buyer.save();
+    }
+
+    order.status = 1;
+    order.shippingStatus = "delivered";
+    order.buyerConfirmedAt = new Date();
+    await order.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: "ORDER_CONFIRMED",
+      targetType: "ORDER",
+      targetId: order.id,
+      result: "SUCCESS",
+      details: { paymentRelease: "metamask_confirm_receipt", wallet: receipt.from },
+      req,
+      txHash,
+    });
+
+    return res.send({ message: "确认收货成功" });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
   }
 };
 
@@ -2430,7 +2873,7 @@ exports.getRecallNotifications = async (req, res) => {
           model: Order,
           as: "order",
         },
-        ...(req.user.role === "regulator" || req.user.role === "admin"
+        ...(isPrivilegedUserRole(req.user.role)
           ? [
               {
                 model: User,
@@ -2447,7 +2890,7 @@ exports.getRecallNotifications = async (req, res) => {
       notifications.map((notification) => ({
         ...serializeRecallNotification(notification),
         buyer:
-          notification.buyer && (req.user.role === "regulator" || req.user.role === "admin")
+          notification.buyer && isPrivilegedUserRole(req.user.role)
             ? {
                 id: notification.buyer.id,
                 username: notification.buyer.username,
@@ -2480,7 +2923,7 @@ exports.updateRecallNotificationStatus = async (req, res) => {
       return res.status(404).send({ message: "Recall notification not found" });
     }
     if (req.user.role === "buyer" && notification.buyerId !== req.userId) {
-      await auditService.recordAccessDenied(req, ["buyer(owner)", "regulator", "admin"]);
+      await auditService.recordAccessDenied(req, ["buyer(owner)", PRIVILEGED_ROLE]);
       return res.status(403).send({ message: "You can only update your own recall notification" });
     }
 
@@ -2797,7 +3240,7 @@ exports.recordAfterSales = async (req, res) => {
       req.user.role === "seller" &&
       req.user.id !== order.product.sellerId
     ) {
-      await auditService.recordAccessDenied(req, ["seller(owner)", "regulator", "admin"]);
+      await auditService.recordAccessDenied(req, ["seller(owner)", PRIVILEGED_ROLE]);
       return res.status(403).send({ message: "You can only record service for your own orders" });
     }
 
@@ -2960,13 +3403,13 @@ exports.confirmReceipt = async (req, res) => {
     }
     if (order.buyerId !== buyer.id) {
       await auditService.recordAccessDenied(req, ["buyer(owner)"]);
-      return res.status(403).send({ message: "You can only confirm your own order" });
+      return res.status(403).send({ message: "只能确认自己的订单" });
     }
     if (order.status !== 0) {
-      return res.status(400).send({ message: "Only locked orders can be confirmed" });
+      return res.status(400).send({ message: "仅托管中的订单可以确认收货" });
     }
     if (order.shippingStatus === "pending") {
-      return res.status(400).send({ message: "Seller has not shipped this order yet" });
+      return res.status(400).send({ message: "卖家尚未发货" });
     }
 
     const receipt = await sendContractTransaction({
@@ -2990,7 +3433,7 @@ exports.confirmReceipt = async (req, res) => {
       txHash: receipt.transactionHash,
     });
 
-    res.send({ message: "Receipt confirmed" });
+    res.send({ message: "确认收货成功" });
   } catch (error) {
     res.status(500).send({ message: error.message });
   }

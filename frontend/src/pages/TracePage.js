@@ -76,11 +76,23 @@ const RISK_LEVEL_LABELS = {
   high: "高",
 };
 
+const SHIPPING_STATUS_LABELS = {
+  pending: "待发货",
+  shipped: "已发货",
+  delivered: "已送达",
+  received: "已收货",
+};
+
+const TIMELINE_RESULT_LABELS = {
+  SUCCESS: "成功",
+  FAIL: "失败",
+};
+
 const VIEWER_ROLE_COPY = {
   regulator: {
-    label: "监管视图",
-    description: "展示监管审查、链上摘要、订单争议与售后全量信息。",
-    homeLabel: "返回监管首页",
+    label: "监督视图",
+    description: "展示监督审查、链上摘要、订单争议与售后全量信息。",
+    homeLabel: "返回监督首页",
   },
   seller: {
     label: "商家视图",
@@ -94,14 +106,24 @@ const VIEWER_ROLE_COPY = {
   },
 };
 
+const ROLE_LABELS = {
+  buyer: "买家",
+  seller: "卖家",
+  regulator: "监督方",
+};
+
 function getViewerRole(user) {
-  if (user?.role === "regulator" || user?.role === "admin") {
+  if (user?.role === "regulator") {
     return "regulator";
   }
   if (user?.role === "seller") {
     return "seller";
   }
   return "buyer";
+}
+
+function formatRole(role) {
+  return ROLE_LABELS[role] || role || "未提供";
 }
 
 function formatDate(value) {
@@ -116,6 +138,14 @@ function formatBoolean(value) {
 
 function formatCategory(value) {
   return CATEGORY_LABELS[value] || value || "未提供";
+}
+
+function formatShippingStatus(value) {
+  return SHIPPING_STATUS_LABELS[value] || value || "未提供";
+}
+
+function formatTimelineResult(value) {
+  return TIMELINE_RESULT_LABELS[value] || value || "未知";
 }
 
 function maskValue(value, prefix = 3, suffix = 2) {
@@ -453,7 +483,7 @@ export default function TracePage() {
                 {canViewRegulatoryDetail && (
                   <section className="space-y-4">
                     <div className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                      监管与链上状态
+                      监督与链上状态
                     </div>
                     <div className="space-y-4 rounded-2xl bg-slate-50 p-5">
                       <div className="flex items-center justify-between">
@@ -483,7 +513,7 @@ export default function TracePage() {
                       </div>
                       <InfoRow label="审核时间" value={formatDate(traceData.auditAt)} />
                       <InfoRow label="审核人" value={traceData.reviewer?.username} />
-                      <InfoRow label="审核角色" value={traceData.reviewer?.role} />
+                      <InfoRow label="审核角色" value={formatRole(traceData.reviewer?.role)} />
                       <InfoRow label="价格" value={`${traceData.price} ETH`} />
                       <InfoRow label="当前库存" value={String(traceData.stock ?? "未提供")} />
                       <InfoRow label="链上来源" value={traceData.chain?.source} />
@@ -604,7 +634,7 @@ export default function TracePage() {
                           {isRegulatorViewer && (
                             <InfoRow label="链上订单 ID" value={String(order.onChainId || "未提供")} />
                           )}
-                          <InfoRow label="物流状态" value={order.shippingStatus || "pending"} />
+                          <InfoRow label="物流状态" value={formatShippingStatus(order.shippingStatus)} />
                           <InfoRow label="物流单号" value={order.trackingNumber} />
                           <InfoRow label="承运方" value={order.shippingCarrier} />
                           <InfoRow label="发货时间" value={formatDate(order.shippedAt)} />
@@ -668,7 +698,7 @@ export default function TracePage() {
                         </div>
 
                         <div className="mt-3 flex flex-wrap gap-3">
-                          <StatusBadge active={item.result === "SUCCESS"} label={item.result || "未知"} />
+                          <StatusBadge active={item.result === "SUCCESS"} label={formatTimelineResult(item.result)} />
                           {item.txHash && (
                             <span className="rounded-full bg-indigo-50 px-3 py-1 text-sm text-indigo-700">链上交易</span>
                           )}
@@ -686,7 +716,7 @@ export default function TracePage() {
                         </div>
 
                         {item.txHash && (
-                          <div className="mt-4 break-all font-mono text-xs text-slate-600">txHash: {item.txHash}</div>
+                          <div className="mt-4 break-all font-mono text-xs text-slate-600">交易哈希：{item.txHash}</div>
                         )}
                       </div>
                     ))}

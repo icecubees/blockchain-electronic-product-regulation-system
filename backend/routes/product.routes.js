@@ -17,7 +17,7 @@ module.exports = function (app) {
 
   app.get(
     "/api/products/pending",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.getPendingProducts
   );
   app.get(
@@ -33,17 +33,17 @@ module.exports = function (app) {
   );
   app.post(
     "/api/products/audit",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.auditProduct
   );
   app.post(
     "/api/products/delist",
-    [verifyToken, requireRoles("seller", "regulator", "admin")],
+    [verifyToken, requireRoles("seller", "regulator")],
     controller.delistProduct
   );
   app.post(
     "/api/products/recall",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.recallProduct
   );
   app.post(
@@ -63,28 +63,38 @@ module.exports = function (app) {
     controller.purchaseProduct
   );
   app.get(
+    "/api/products/:productId/purchase-transaction",
+    [verifyToken, requireRoles("buyer")],
+    controller.prepareWalletPurchase
+  );
+  app.post(
+    "/api/products/wallet-purchase/finalize",
+    [verifyToken, requireRoles("buyer")],
+    controller.finalizeWalletPurchase
+  );
+  app.get(
     "/api/products/recall-notifications/summary",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.getRecallNotificationSummary
   );
   app.get(
     "/api/products/recall-notifications",
-    [verifyToken, requireRoles("buyer", "regulator", "admin")],
+    [verifyToken, requireRoles("buyer", "regulator")],
     controller.getRecallNotifications
   );
   app.post(
     "/api/products/recall-notifications/:notificationId/status",
-    [verifyToken, requireRoles("buyer", "regulator", "admin")],
+    [verifyToken, requireRoles("buyer", "regulator")],
     controller.updateRecallNotificationStatus
   );
   app.get(
     "/api/products/integration-jobs",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.getIntegrationJobs
   );
   app.post(
     "/api/products/integration-jobs/:jobId/retry",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.retryIntegrationJob
   );
   app.get(
@@ -104,12 +114,12 @@ module.exports = function (app) {
   );
   app.post(
     "/api/products/escalate-after-sales-request",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.escalateAfterSalesRequestToComplaint
   );
   app.post(
     "/api/products/after-sales",
-    [verifyToken, requireRoles("seller", "regulator", "admin")],
+    [verifyToken, requireRoles("seller", "regulator")],
     controller.recordAfterSales
   );
   app.post(
@@ -121,6 +131,16 @@ module.exports = function (app) {
     "/api/products/confirm",
     [verifyToken, requireRoles("buyer")],
     controller.confirmReceipt
+  );
+  app.get(
+    "/api/products/orders/:orderId/confirm-transaction",
+    [verifyToken, requireRoles("buyer")],
+    controller.prepareWalletConfirmReceipt
+  );
+  app.post(
+    "/api/products/wallet-confirm/finalize",
+    [verifyToken, requireRoles("buyer")],
+    controller.finalizeWalletConfirmReceipt
   );
   app.post(
     "/api/products/rate",
@@ -140,12 +160,12 @@ module.exports = function (app) {
   );
   app.get(
     "/api/products/complaints",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.getAllComplaints
   );
   app.post(
     "/api/products/resolve",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     controller.resolveComplaint
   );
 };

@@ -3,8 +3,8 @@ module.exports = (app) => {
   const { verifyToken, requireRoles } = require("../middleware/authJwt");
   const router = require("express").Router();
 
-  router.get("/stats", [verifyToken, requireRoles("regulator", "admin")], controller.getAuditStats);
-  router.get("/", [verifyToken, requireRoles("regulator", "admin")], controller.getAuditLogs);
+  router.get("/stats", [verifyToken, requireRoles("regulator")], controller.getAuditStats);
+  router.get("/", [verifyToken, requireRoles("regulator")], controller.getAuditLogs);
 
   app.use("/api/audit-logs", router);
 };

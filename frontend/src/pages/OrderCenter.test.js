@@ -249,7 +249,7 @@ test("order center shows payment and refund states", async () => {
     expect(ProductService.getMyOrders).toHaveBeenCalled();
   });
 
-  expect(screen.getByText("Order trace")).toBeInTheDocument();
+  expect(screen.getByText("订单溯源")).toBeInTheDocument();
   expect(screen.getAllByText("已退款").length).toBeGreaterThan(0);
   expect(screen.getByText("CHAIN_ORDER_12")).toBeInTheDocument();
   expect(screen.getByText("退款金额")).toBeInTheDocument();
@@ -288,7 +288,7 @@ test("buyer can acknowledge a recall notification from order center", async () =
     expect(ProductService.getMyOrders).toHaveBeenCalled();
   });
 
-  expect(screen.getByText("Order trace")).toBeInTheDocument();
+  expect(screen.getByText("订单溯源")).toBeInTheDocument();
   fireEvent.click(
     screen.getByRole("button", {
       name: (_name, element) => element.textContent === "\u786e\u8ba4\u5df2\u77e5\u6089",
@@ -364,7 +364,7 @@ test("order center can expand order trace chain and open product trace", async (
     expect(ProductService.getMyOrders).toHaveBeenCalled();
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "Order trace" }));
+  fireEvent.click(screen.getByRole("button", { name: "订单溯源" }));
 
   expect(screen.getByText("订单级溯源链")).toBeInTheDocument();
   expect(screen.getByText("订单创建")).toBeInTheDocument();
@@ -375,6 +375,6 @@ test("order center can expand order trace chain and open product trace", async (
   expect(screen.getByText("售后服务记录")).toBeInTheDocument();
   expect(screen.getAllByText(/Battery pack replaced/).length).toBeGreaterThan(0);
 
-  fireEvent.click(screen.getByRole("button", { name: "Product trace" }));
+  fireEvent.click(screen.getByRole("button", { name: "商品溯源" }));
   expect(mockNavigate).toHaveBeenCalledWith("/trace?productId=101");
 });

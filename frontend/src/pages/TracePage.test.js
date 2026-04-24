@@ -139,8 +139,8 @@ test("regulator sees full trace details", async () => {
   });
 
   expect(screen.getByText("电子设备追溯报告")).toBeInTheDocument();
-  expect(screen.getByText("监管视图")).toBeInTheDocument();
-  expect(await screen.findByText("监管与链上状态")).toBeInTheDocument();
+  expect(screen.getByText("监督视图")).toBeInTheDocument();
+  expect(await screen.findByText("监督与链上状态")).toBeInTheDocument();
   expect(screen.getByText("Approved for sale")).toBeInTheDocument();
   expect(screen.getByText("QA Lab")).toBeInTheDocument();
   expect(screen.getByText("regulator1")).toBeInTheDocument();
@@ -159,7 +159,7 @@ test("buyer only sees buyer-safe trace content", async () => {
   render(<TracePage />);
 
   expect(await screen.findByText("买家视图")).toBeInTheDocument();
-  expect(screen.queryByText("监管与链上状态")).not.toBeInTheDocument();
+  expect(screen.queryByText("监督与链上状态")).not.toBeInTheDocument();
   expect(screen.queryByText("审计时间线")).not.toBeInTheDocument();
   expect(screen.queryByText("关联订单")).not.toBeInTheDocument();
   expect(screen.queryByText("QA Lab")).not.toBeInTheDocument();
@@ -181,7 +181,7 @@ test("seller sees operational details but not regulator-only timeline", async ()
   expect(await screen.findByText("商家视图")).toBeInTheDocument();
   expect(await screen.findByText("关联订单")).toBeInTheDocument();
   expect(screen.getByText("QA Lab")).toBeInTheDocument();
-  expect(screen.queryByText("监管与链上状态")).not.toBeInTheDocument();
+  expect(screen.queryByText("监督与链上状态")).not.toBeInTheDocument();
   expect(screen.queryByText("审计时间线")).not.toBeInTheDocument();
   expect(screen.queryByText("0xdevicehash")).not.toBeInTheDocument();
   expect(screen.queryByText("Refund required")).not.toBeInTheDocument();

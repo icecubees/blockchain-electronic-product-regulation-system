@@ -18,7 +18,7 @@ test("register rejects elevated self-registration roles", async (t) => {
     body: {
       username: "attacker",
       password: "Passw0rd!",
-      role: "admin",
+      role: "regulator",
     },
   };
   const res = createMockRes();
@@ -26,7 +26,7 @@ test("register rejects elevated self-registration roles", async (t) => {
   await authController.register(req, res);
 
   assert.equal(res.statusCode, 403);
-  assert.equal(res.body.message, "Only buyer and seller accounts can be self-registered");
+  assert.equal(res.body.message, "仅支持买家和卖家自行注册");
 });
 
 test("register creates seller in pending status with electronics qualification metadata", async (t) => {
@@ -62,7 +62,7 @@ test("register creates seller in pending status with electronics qualification m
   await authController.register(req, res);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.message, "Seller registration submitted, waiting for approval.");
+  assert.equal(res.body.message, "卖家注册已提交，等待监督方审核。");
   assert.equal(createdPayload.role, "seller");
   assert.equal(createdPayload.status, 0);
   assert.equal(createdPayload.qualificationType, "brand_authorized");
@@ -183,7 +183,7 @@ test("updateUserStatus freezes a managed user with audit trail", async (t) => {
   await authController.updateUserStatus(req, res);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.message, "User frozen successfully");
+  assert.equal(res.body.message, "用户已冻结");
   assert.equal(savedPayload.status, 2);
   assert.equal(savedPayload.frozenReason, "Repeated abusive complaints");
   assert.ok(savedPayload.frozenAt instanceof Date);
@@ -191,15 +191,15 @@ test("updateUserStatus freezes a managed user with audit trail", async (t) => {
   assert.equal(capturedAudit.targetId, 15);
 });
 
-test("updateUserStatus blocks regulators from managing privileged users", async (t) => {
+test("updateUserStatus blocks supervisors from managing peer privileged users", async (t) => {
   const originalFindByPk = db.user.findByPk;
   const originalAccessDenied = auditService.recordAccessDenied;
   let accessDeniedCalled = false;
 
   db.user.findByPk = async () => ({
     id: 2,
-    username: "admin_root",
-    role: "admin",
+    username: "supervisor_root",
+    role: "regulator",
     status: 1,
     save: async function save() {
       return this;
@@ -231,6 +231,6 @@ test("updateUserStatus blocks regulators from managing privileged users", async 
   await authController.updateUserStatus(req, res);
 
   assert.equal(res.statusCode, 403);
-  assert.equal(res.body.message, "You do not have permission to manage this user");
+  assert.equal(res.body.message, "无权治理该用户");
   assert.equal(accessDeniedCalled, true);
 });

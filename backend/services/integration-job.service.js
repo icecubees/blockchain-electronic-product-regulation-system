@@ -2,6 +2,7 @@ const db = require("../models");
 const auditService = require("./audit.service");
 const { syncSellerBlacklist } = require("./seller-blacklist.service");
 const {
+  web3,
   contract,
   accounts,
   sendContractTransaction,
@@ -208,6 +209,7 @@ async function retryPurchaseProduct(job, payload) {
         account: accounts.market,
         method: contract.methods.purchaseProduct(chainId, buyer.ethAddress),
         gas: 1200000,
+        value: web3.utils.toWei(String(product.price), "ether"),
       });
       txHash = receipt.transactionHash;
       chainOrderId = parseInt(await contract.methods.orderCount().call(), 10);
@@ -226,7 +228,7 @@ async function retryPurchaseProduct(job, payload) {
           price: payload.price ?? product.price,
           status: 0,
           paymentStatus: "paid",
-          paymentMethod: "platform_simulated",
+          paymentMethod: "contract_escrow",
           paymentReference: `CHAIN_ORDER_${chainOrderId}`,
           paidAt: payload.paidAt ? new Date(payload.paidAt) : new Date(),
           refundStatus: "none",

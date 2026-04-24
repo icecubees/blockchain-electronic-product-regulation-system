@@ -34,7 +34,10 @@ contract ProductRegulation {
         uint256 id;
         uint256 productId;
         address buyer;
+        address seller;
         uint256 price;
+        uint256 escrowAmount;
+        bool fundsSettled;
         OrderState state;
         string complaintReason;
         uint256 rating;
@@ -86,7 +89,10 @@ contract ProductRegulation {
     event ProductRefurbishDeclared(uint256 indexed id, uint8 riskLevel, string notes);
 
     event OrderCreated(uint256 orderId, uint256 productId, address buyer);
+    event PaymentEscrowed(uint256 indexed orderId, address indexed buyer, uint256 amount);
     event OrderConfirmed(uint256 orderId, address buyer);
+    event FundsReleased(uint256 indexed orderId, address indexed seller, uint256 amount);
+    event FundsRefunded(uint256 indexed orderId, address indexed buyer, uint256 amount);
     event OrderRated(uint256 orderId, uint256 rating, string comment);
 
     event ComplaintRaised(uint256 orderId, address buyer, string reason);
@@ -332,10 +338,18 @@ contract ProductRegulation {
         emit ProductRestocked(_id, _amount, p.stock);
     }
 
+    function purchaseProductFromWallet(uint256 _productId) public payable {
+        _purchaseProduct(_productId, msg.sender);
+    }
+
     function purchaseProduct(
         uint256 _productId,
         address buyerWallet
-    ) public onlyMarketOperator {
+    ) public payable onlyMarketOperator {
+        _purchaseProduct(_productId, buyerWallet);
+    }
+
+    function _purchaseProduct(uint256 _productId, address buyerWallet) internal {
         Product storage p = products[_productId];
 
         require(buyerWallet != address(0), "Invalid buyer");
@@ -346,6 +360,7 @@ contract ProductRegulation {
         require(p.stock > 0, "Out of stock");
         require(p.seller != buyerWallet, "Seller cannot buy own");
         require(!sellers[p.seller].isBlacklisted, "Seller is blacklisted");
+        require(msg.value == p.price, "Incorrect payment amount");
 
         p.stock = p.stock - 1;
 
@@ -354,7 +369,10 @@ contract ProductRegulation {
             orderCount,
             _productId,
             buyerWallet,
+            p.seller,
             p.price,
+            msg.value,
+            false,
             OrderState.Locked,
             "",
             0,
@@ -362,12 +380,21 @@ contract ProductRegulation {
         );
 
         emit OrderCreated(orderCount, _productId, buyerWallet);
+        emit PaymentEscrowed(orderCount, buyerWallet, msg.value);
+    }
+
+    function confirmReceiptFromWallet(uint256 _orderId) public {
+        _confirmReceipt(_orderId, msg.sender);
     }
 
     function confirmReceipt(
         uint256 _orderId,
         address buyerWallet
     ) public onlyMarketOperator {
+        _confirmReceipt(_orderId, buyerWallet);
+    }
+
+    function _confirmReceipt(uint256 _orderId, address buyerWallet) internal {
         Order storage o = orders[_orderId];
         Product storage p = products[o.productId];
 
@@ -377,6 +404,7 @@ contract ProductRegulation {
 
         o.state = OrderState.Released;
         sellers[p.seller].reputationScore += 1;
+        _releaseFundsToSeller(o, p.seller);
 
         emit OrderConfirmed(_orderId, buyerWallet);
     }
@@ -439,6 +467,7 @@ contract ProductRegulation {
         if (_buyerWon) {
             o.state = OrderState.Refunded;
             sellers[p.seller].reputationScore -= 20;
+            _refundFundsToBuyer(o);
 
             if (sellers[p.seller].reputationScore < 0) {
                 sellers[p.seller].isBlacklisted = true;
@@ -446,9 +475,30 @@ contract ProductRegulation {
             }
         } else {
             o.state = OrderState.Released;
+            _releaseFundsToSeller(o, p.seller);
         }
 
         emit ComplaintResolved(_orderId, _buyerWon);
+    }
+
+    function _releaseFundsToSeller(Order storage order, address sellerWallet) internal {
+        require(!order.fundsSettled, "Funds already settled");
+        order.fundsSettled = true;
+
+        (bool sent, ) = payable(sellerWallet).call{value: order.escrowAmount}("");
+        require(sent, "Seller payout failed");
+
+        emit FundsReleased(order.id, sellerWallet, order.escrowAmount);
+    }
+
+    function _refundFundsToBuyer(Order storage order) internal {
+        require(!order.fundsSettled, "Funds already settled");
+        order.fundsSettled = true;
+
+        (bool sent, ) = payable(order.buyer).call{value: order.escrowAmount}("");
+        require(sent, "Buyer refund failed");
+
+        emit FundsRefunded(order.id, order.buyer, order.escrowAmount);
     }
 
     function _verifyAuditSignature(

@@ -58,6 +58,14 @@ const resubmitProduct = (payload) =>
 
 const purchaseProduct = (productId) =>
   axios.post(API_URL + "purchase", { productId }, { headers: authHeader() });
+const prepareWalletPurchase = (productId) =>
+  axios.get(`${API_URL}${productId}/purchase-transaction`, { headers: authHeader() });
+const finalizeWalletPurchase = (productId, txHash) =>
+  axios.post(
+    API_URL + "wallet-purchase/finalize",
+    { productId, txHash },
+    { headers: authHeader() }
+  );
 
 const getMyOrders = () => axios.get(API_URL + "orders", { headers: authHeader() });
 const getRecallNotifications = (params = {}) =>
@@ -89,6 +97,14 @@ const shipOrder = (orderId, trackingNumber, shippingCarrier) =>
   );
 const confirmReceipt = (orderId) =>
   axios.post(API_URL + "confirm", { orderId }, { headers: authHeader() });
+const prepareWalletConfirmReceipt = (orderId) =>
+  axios.get(`${API_URL}orders/${orderId}/confirm-transaction`, { headers: authHeader() });
+const finalizeWalletConfirmReceipt = (orderId, txHash) =>
+  axios.post(
+    API_URL + "wallet-confirm/finalize",
+    { orderId, txHash },
+    { headers: authHeader() }
+  );
 
 const rateOrder = (orderId, rating, comment) =>
   axios.post(API_URL + "rate", { orderId, rating, comment }, { headers: authHeader() });
@@ -128,6 +144,8 @@ const ProductService = {
   restockProduct,
   resubmitProduct,
   purchaseProduct,
+  prepareWalletPurchase,
+  finalizeWalletPurchase,
   getMyOrders,
   getRecallNotifications,
   updateRecallNotificationStatus,
@@ -138,6 +156,8 @@ const ProductService = {
   recordAfterSales,
   shipOrder,
   confirmReceipt,
+  prepareWalletConfirmReceipt,
+  finalizeWalletConfirmReceipt,
   getAllComplaints,
   rateOrder,
   raiseComplaint,

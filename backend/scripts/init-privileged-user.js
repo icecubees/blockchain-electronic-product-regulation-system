@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const db = require("../models");
 const { ensureRuntimeSchema } = require("../config/runtime-schema");
+const { runMigrations } = require("./migrate");
 const { createPrivilegedUser } = require("../controllers/auth.controller");
 
 function getArgValue(name) {
@@ -12,18 +13,19 @@ function getArgValue(name) {
 async function main() {
   const username = getArgValue("username") || process.env.INIT_USERNAME;
   const password = getArgValue("password") || process.env.INIT_PASSWORD;
-  const role = getArgValue("role") || process.env.INIT_ROLE || "admin";
+  const role = getArgValue("role") || process.env.INIT_ROLE || "regulator";
   const ethAddress = getArgValue("ethAddress") || process.env.INIT_ETH_ADDRESS || null;
 
   if (!username || !password) {
     throw new Error(
-      "Usage: node backend/scripts/init-privileged-user.js --username=<name> --password=<password> [--role=admin|regulator]"
+      "Usage: node backend/scripts/init-privileged-user.js --username=<name> --password=<password> [--role=regulator]"
     );
   }
 
   await db.sequelize.authenticate();
-  await ensureRuntimeSchema(db.sequelize, db.Sequelize);
   await db.sequelize.sync({ force: false });
+  await runMigrations();
+  await ensureRuntimeSchema(db.sequelize, db.Sequelize);
 
   const user = await createPrivilegedUser({
     username,

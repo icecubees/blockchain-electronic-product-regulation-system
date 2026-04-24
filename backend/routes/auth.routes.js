@@ -5,27 +5,37 @@ module.exports = (app) => {
 
   router.post("/register", auth.register);
   router.post("/login", auth.signin);
-  router.post("/approve", [verifyToken, requireRoles("regulator", "admin")], auth.approveSeller);
+  router.post("/approve", [verifyToken, requireRoles("regulator")], auth.approveSeller);
   router.get(
     "/blacklisted-sellers",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     auth.getBlacklistedSellers
   );
   router.post(
     "/unblacklist",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     auth.unblacklistSeller
   );
   router.get(
     "/pending-sellers",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     auth.getPendingSellers
   );
-  router.get("/users", [verifyToken, requireRoles("regulator", "admin")], auth.getUsers);
+  router.get("/users", [verifyToken, requireRoles("regulator")], auth.getUsers);
   router.patch(
     "/users/:userId/status",
-    [verifyToken, requireRoles("regulator", "admin")],
+    [verifyToken, requireRoles("regulator")],
     auth.updateUserStatus
+  );
+  router.patch(
+    "/wallet",
+    [verifyToken, requireRoles("buyer", "seller")],
+    auth.bindWallet
+  );
+  router.patch(
+    "/seller/wallet",
+    [verifyToken, requireRoles("seller")],
+    auth.bindSellerWallet
   );
 
   app.use("/api/auth", router);

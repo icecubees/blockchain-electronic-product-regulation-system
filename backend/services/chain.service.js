@@ -105,10 +105,40 @@ async function sendContractTransaction({ account, method, gas = 600000, value = 
   });
 }
 
+async function getChainHealth() {
+  try {
+    const [listening, networkId, blockNumber, code, unlockedAccounts] = await Promise.all([
+      web3.eth.net.isListening(),
+      web3.eth.net.getId(),
+      web3.eth.getBlockNumber(),
+      web3.eth.getCode(CONTRACT_ADDRESS),
+      web3.eth.getAccounts(),
+    ]);
+
+    return {
+      status: listening && code && code !== "0x" ? "online" : "degraded",
+      message: listening && code && code !== "0x" ? "Ganache 与托管合约连接正常" : "链服务可访问，但未检测到合约代码",
+      ganacheUrl: GANACHE_URL,
+      contractAddress: CONTRACT_ADDRESS,
+      networkId: String(networkId),
+      blockNumber: String(blockNumber),
+      unlockedAccountCount: unlockedAccounts.length,
+    };
+  } catch (error) {
+    return {
+      status: "offline",
+      message: error.message,
+      ganacheUrl: GANACHE_URL,
+      contractAddress: CONTRACT_ADDRESS,
+    };
+  }
+}
+
 module.exports = {
   web3,
   contract,
   accounts,
   CONTRACT_ADDRESS,
   sendContractTransaction,
+  getChainHealth,
 };

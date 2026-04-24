@@ -921,6 +921,7 @@ test("purchaseProduct decrements stock within a locked transaction", async (t) =
   const auditCalls = [];
   let orderCreateOptions = null;
   let orderCreatePayload = null;
+  let purchaseTx = null;
   const product = {
     id: 91,
     sellerId: 8,
@@ -957,7 +958,10 @@ test("purchaseProduct decrements stock within a locked transaction", async (t) =
   };
   chainService.web3.eth.getGasPrice = async () => "1";
   chainService.web3.eth.getAccounts = async () => ["0xadmin", "0xregulator", "0xmarket"];
-  chainService.web3.eth.sendTransaction = async () => ({ transactionHash: "0xpurchase" });
+  chainService.web3.eth.sendTransaction = async (tx) => {
+    purchaseTx = tx;
+    return { transactionHash: "0xpurchase" };
+  };
   chainService.contract.methods.purchaseProduct = () => ({
     encodeABI: () => "0xpurchaseProduct",
   });
@@ -997,10 +1001,11 @@ test("purchaseProduct decrements stock within a locked transaction", async (t) =
   await productController.purchaseProduct(req, res);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.message, "Purchase successful");
+  assert.equal(res.body.message, "购买成功");
+  assert.equal(purchaseTx.value, chainService.web3.utils.toWei("1.5", "ether"));
   assert.equal(product.stock, 1);
   assert.equal(orderCreatePayload.paymentStatus, "paid");
-  assert.equal(orderCreatePayload.paymentMethod, "platform_simulated");
+  assert.equal(orderCreatePayload.paymentMethod, "contract_escrow");
   assert.equal(orderCreatePayload.paymentReference, "CHAIN_ORDER_9");
   assert.equal(orderCreatePayload.refundStatus, "none");
   assert.equal(orderCreatePayload.refundAmount, 0);
@@ -1114,6 +1119,7 @@ test("retryIntegrationJob replays a failed purchase integration job", async (t) 
   const transaction = mockSequelizeTransaction(t);
 
   let createdOrder = null;
+  let retryPurchaseTx = null;
   const job = {
     id: 801,
     jobType: "purchase_product",
@@ -1171,7 +1177,10 @@ test("retryIntegrationJob replays a failed purchase integration job", async (t) 
   auditService.record = async () => {};
   chainService.web3.eth.getGasPrice = async () => "1";
   chainService.web3.eth.getAccounts = async () => ["0xadmin", "0xregulator", "0xmarket"];
-  chainService.web3.eth.sendTransaction = async () => ({ transactionHash: "0xretrypurchase" });
+  chainService.web3.eth.sendTransaction = async (tx) => {
+    retryPurchaseTx = tx;
+    return { transactionHash: "0xretrypurchase" };
+  };
   chainService.contract.methods.purchaseProduct = () => ({
     encodeABI: () => "0xpurchaseProduct",
   });
@@ -1216,7 +1225,9 @@ test("retryIntegrationJob replays a failed purchase integration job", async (t) 
   assert.ok(job.completedAt instanceof Date);
   assert.equal(product.stock, 2);
   assert.equal(createdOrder.onChainId, 14);
+  assert.equal(createdOrder.paymentMethod, "contract_escrow");
   assert.equal(createdOrder.paymentReference, "CHAIN_ORDER_14");
+  assert.equal(retryPurchaseTx.value, chainService.web3.utils.toWei("1.6", "ether"));
 });
 
 test("restockProduct updates stock within a locked transaction", async (t) => {
@@ -1389,7 +1400,8 @@ test("addProduct degrades AI service failures to manual review", async (t) => {
     id: 5,
     role: "seller",
     status: 1,
-    ethAddress: "0xseller-create",
+    ethAddress: "0x0000000000000000000000000000000000000005",
+    walletBound: true,
     isBlacklisted: false,
   });
   db.product.create = async (payload) => {
@@ -1413,7 +1425,7 @@ test("addProduct degrades AI service failures to manual review", async (t) => {
   });
   chainService.contract.methods.sellers = () => ({
     call: async () => ({
-      walletAddress: "0xseller-create",
+      walletAddress: "0x0000000000000000000000000000000000000005",
       isBlacklisted: false,
       reputationScore: "60",
     }),
@@ -1454,11 +1466,11 @@ test("addProduct degrades AI service failures to manual review", async (t) => {
   assert.equal(res.statusCode, 200);
   assert.equal(
     res.body.message,
-    "AI pre-audit is temporarily unavailable. Routed to manual review."
+    "AI 预审核暂不可用，商品已转入人工审核。"
   );
   assert.equal(res.body.aiAssessment.serviceUnavailable, true);
   assert.equal(createdProduct.auditStatus, 0);
-  assert.equal(createdProduct.auditReason, "AI service unavailable. Routed to manual review.");
+  assert.equal(createdProduct.auditReason, "AI 服务暂不可用，已转入人工审核。");
   assert.ok(auditCalls.some((call) => call.action === "PRODUCT_CREATED"));
   assert.ok(
     auditCalls.some((call) => call.action === "PRODUCT_AI_DEGRADED_TO_MANUAL_REVIEW")
@@ -1507,7 +1519,8 @@ test("resubmitProduct degrades AI service failures to manual review", async (t) 
     id: 7,
     role: "seller",
     status: 1,
-    ethAddress: "0xseller-resubmit",
+    ethAddress: "0x0000000000000000000000000000000000000007",
+    walletBound: true,
     isBlacklisted: false,
   });
   db.product.findByPk = async () => product;
@@ -1528,7 +1541,7 @@ test("resubmitProduct degrades AI service failures to manual review", async (t) 
   });
   chainService.contract.methods.sellers = () => ({
     call: async () => ({
-      walletAddress: "0xseller-resubmit",
+      walletAddress: "0x0000000000000000000000000000000000000007",
       isBlacklisted: false,
       reputationScore: "60",
     }),
@@ -1572,11 +1585,11 @@ test("resubmitProduct degrades AI service failures to manual review", async (t) 
   assert.equal(res.statusCode, 200);
   assert.equal(
     res.body.message,
-    "AI pre-audit is temporarily unavailable. Routed this resubmission to manual review."
+    "AI 预审核暂不可用，本次重新提交已转入人工审核。"
   );
   assert.equal(res.body.aiAssessment.serviceUnavailable, true);
   assert.equal(product.auditStatus, 0);
-  assert.equal(product.auditReason, "AI service unavailable. Routed to manual review.");
+  assert.equal(product.auditReason, "AI 服务暂不可用，已转入人工审核。");
   assert.equal(product.ipfsHash, "QmNewReport");
   assert.equal(product.qualificationHash, "QmNewCert");
   assert.equal(product.onChainId, 22);

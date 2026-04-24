@@ -79,7 +79,7 @@ export default function BlacklistSellerManager({ sellers = [], loading, onRestor
 
       {sellers.length === 0 ? (
         <div className="rounded-xl border border-rose-100 bg-white p-4 text-sm text-slate-600">
-          当前没有被列入黑名单的卖家。该区域会持续保留，便于监管方随时查看状态。
+          当前没有被列入黑名单的卖家。该区域会持续保留，便于监督方随时查看状态。
         </div>
       ) : (
         <div className="space-y-3">

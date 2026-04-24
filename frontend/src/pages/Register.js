@@ -49,7 +49,7 @@ export default function Register() {
   const [messageTone, setMessageTone] = useState("error");
 
   const sellerRegisterMessage = useMemo(
-    () => "商家注册申请已提交，请等待监管审核通过后登录。",
+    () => "商家注册申请已提交，请等待监督方审核通过后登录。",
     []
   );
 
@@ -106,7 +106,7 @@ export default function Register() {
         <div className="mb-6">
           <h2 className="text-3xl font-bold text-slate-900">账号注册</h2>
           <p className="mt-2 text-sm text-slate-500">
-            买家账号注册后可立即登录，商家账号可补充电子产品经营资质信息，供监管审核使用。
+            买家账号注册后可立即登录，商家账号可补充电子产品经营资质信息，供监督方审核使用。
           </p>
         </div>
 
@@ -165,7 +165,7 @@ export default function Register() {
                 className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500"
               >
                 <option value="buyer">买家账号（立即生效）</option>
-                <option value="seller">商家账号（需监管审核）</option>
+                <option value="seller">商家账号（需监督方审核）</option>
               </select>
             </div>
 
@@ -174,7 +174,7 @@ export default function Register() {
                 <div className="mb-4">
                   <h3 className="text-lg font-semibold text-indigo-900">电子产品商家资质信息</h3>
                   <p className="mt-1 text-sm text-indigo-700">
-                    这些内容为可选项，但能帮助监管方判断该商家是否具备电子产品销售、维修或二手设备经营资质。
+                    这些内容为可选项，但能帮助监督方判断该商家是否具备电子产品销售、维修或二手设备经营资质。
                   </p>
                 </div>
 

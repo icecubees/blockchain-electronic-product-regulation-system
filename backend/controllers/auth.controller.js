@@ -18,6 +18,7 @@ const {
 
 const User = db.user;
 const { Op } = db.Sequelize;
+const PRIVILEGED_ROLE = "regulator";
 const SELLER_QUALIFICATION_TYPES = new Set([
   "retailer",
   "brand_authorized",
@@ -25,7 +26,7 @@ const SELLER_QUALIFICATION_TYPES = new Set([
   "used_device_specialist",
   "comprehensive",
 ]);
-const PRIVILEGED_ROLES = new Set(["admin", "regulator"]);
+const PRIVILEGED_ROLES = new Set([PRIVILEGED_ROLE]);
 const USER_STATUSES = new Set([0, 1, 2]);
 
 function normalizeOptionalString(value) {
@@ -54,7 +55,11 @@ function buildSellerQualificationFields(input = {}) {
 
 function normalizeRole(value) {
   const normalized = normalizeOptionalString(value);
-  return normalized ? normalized.toLowerCase() : null;
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.toLowerCase();
 }
 
 function normalizeStatus(value, fallback = null) {
@@ -81,6 +86,22 @@ function normalizeStatus(value, fallback = null) {
   return USER_STATUSES.has(parsed) ? parsed : fallback;
 }
 
+function normalizeBooleanFilter(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no"].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
 function parsePositiveInteger(value, fallbackValue, max = 100) {
   const parsed = parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed <= 0) {
@@ -91,12 +112,8 @@ function parsePositiveInteger(value, fallbackValue, max = 100) {
 }
 
 function getUserScopeForOperator(operator) {
-  if (operator?.role === "admin") {
-    return ["buyer", "seller", "regulator", "admin"];
-  }
-
-  if (operator?.role === "regulator") {
-    return ["buyer", "seller"];
+  if (operator?.role === PRIVILEGED_ROLE) {
+    return ["buyer", "seller", PRIVILEGED_ROLE];
   }
 
   return [];
@@ -107,12 +124,8 @@ function canManageUser(operator, targetUser) {
     return false;
   }
 
-  if (operator.role === "admin") {
-    return targetUser.role !== "admin";
-  }
-
-  if (operator.role === "regulator") {
-    return ["buyer", "seller"].includes(targetUser.role);
+  if (operator.role === PRIVILEGED_ROLE) {
+    return targetUser.role !== PRIVILEGED_ROLE;
   }
 
   return false;
@@ -127,6 +140,7 @@ function serializeManagedUser(user, operator) {
     role: rawUser.role,
     status: rawUser.status,
     ethAddress: rawUser.ethAddress,
+    walletBound: Boolean(rawUser.walletBound),
     qualificationType: rawUser.qualificationType || null,
     isBlacklisted: Boolean(rawUser.isBlacklisted),
     frozenReason: rawUser.frozenReason || null,
@@ -148,15 +162,15 @@ async function createPrivilegedUser({
   const normalizedPassword = String(password || "");
 
   if (!normalizedUsername || !normalizedPassword) {
-    throw new Error("Username and password are required");
+    throw new Error("用户名和密码不能为空");
   }
   if (!PRIVILEGED_ROLES.has(normalizedRole)) {
-    throw new Error("Role must be admin or regulator");
+    throw new Error("角色必须为监督方");
   }
 
   const existed = await User.findOne({ where: { username: normalizedUsername } });
   if (existed) {
-    throw new Error("Username already exists");
+    throw new Error("用户名已存在");
   }
 
   return User.create({
@@ -165,6 +179,7 @@ async function createPrivilegedUser({
     role: normalizedRole,
     status: 1,
     ethAddress: ethAddress || web3.eth.accounts.create().address,
+    walletBound: Boolean(ethAddress),
   });
 }
 
@@ -181,17 +196,17 @@ exports.register = async (req, res) => {
     const { username, password, role } = req.body;
 
     if (!username || !password) {
-      return res.status(400).send({ message: "Missing username or password" });
+      return res.status(400).send({ message: "用户名或密码不能为空" });
     }
 
     const existed = await User.findOne({ where: { username } });
     if (existed) {
-      return res.status(400).send({ message: "Username already exists" });
+      return res.status(400).send({ message: "用户名已存在" });
     }
 
     if (role && !["buyer", "seller"].includes(role)) {
       return res.status(403).send({
-        message: "Only buyer and seller accounts can be self-registered",
+        message: "仅支持买家和卖家自行注册",
       });
     }
 
@@ -207,14 +222,15 @@ exports.register = async (req, res) => {
       role: userRole,
       status: initialStatus,
       ethAddress: virtualAddress,
+      walletBound: false,
       ...qualificationFields,
     });
 
     if (userRole === "seller") {
-      return res.send({ message: "Seller registration submitted, waiting for approval." });
+      return res.send({ message: "卖家注册已提交，等待监督方审核。" });
     }
 
-    return res.send({ message: "Registration successful" });
+    return res.send({ message: "注册成功" });
   } catch (error) {
     console.error("Register failed:", error);
     return res.status(500).send({ message: error.message });
@@ -237,11 +253,11 @@ exports.signin = async (req, res) => {
     }
 
     if (user.status === 0) {
-      return res.status(403).send({ message: "Account is pending approval" });
+      return res.status(403).send({ message: "账号待审核，暂不能登录" });
     }
     if (user.status === 2) {
       return res.status(403).send({
-        message: "Account is frozen",
+        message: "账号已被冻结",
         frozenReason: user.frozenReason || null,
       });
     }
@@ -257,7 +273,7 @@ exports.signin = async (req, res) => {
         details: { reason: "INVALID_PASSWORD" },
         req,
       });
-      return res.status(401).send({ accessToken: null, message: "Invalid password" });
+      return res.status(401).send({ accessToken: null, message: "密码错误" });
     }
 
     const token = jwt.sign({ id: user.id }, config.secret, { expiresIn: 86400 });
@@ -278,6 +294,7 @@ exports.signin = async (req, res) => {
       role: user.role,
       status: user.status,
       ethAddress: user.ethAddress,
+      walletBound: Boolean(user.walletBound),
       accessToken: token,
       reputationScore: sellerProfile.reputationScore,
       isBlacklisted: sellerProfile.isBlacklisted,
@@ -296,16 +313,16 @@ exports.approveSeller = async (req, res) => {
     const reviewReason = String(reason || "").trim();
 
     if (!seller) {
-      return res.status(404).send({ message: "User not found" });
+      return res.status(404).send({ message: "用户不存在" });
     }
     if (seller.role !== "seller") {
-      return res.status(400).send({ message: "Not a seller account" });
+      return res.status(400).send({ message: "目标用户不是卖家账号" });
     }
     if (!["approve", "reject"].includes(action)) {
-      return res.status(400).send({ message: "Invalid review action" });
+      return res.status(400).send({ message: "审核动作无效" });
     }
     if (!reviewReason) {
-      return res.status(400).send({ message: "Review reason is required" });
+      return res.status(400).send({ message: "审核原因不能为空" });
     }
 
     if (action === "reject") {
@@ -322,7 +339,7 @@ exports.approveSeller = async (req, res) => {
         req,
       });
 
-      return res.send({ message: "Seller request rejected" });
+      return res.send({ message: "卖家申请已驳回" });
     }
 
     const receipt = await sendContractTransaction({
@@ -345,10 +362,10 @@ exports.approveSeller = async (req, res) => {
       txHash: receipt.transactionHash,
     });
 
-    return res.send({ message: "Seller approved and activated" });
+    return res.send({ message: "卖家审核通过并已激活" });
   } catch (error) {
     console.error("Approve seller failed:", error);
-    return res.status(500).send({ message: "Approval failed: " + error.message });
+    return res.status(500).send({ message: "卖家审核失败：" + error.message });
   }
 };
 
@@ -413,15 +430,15 @@ exports.unblacklistSeller = async (req, res) => {
     const seller = await User.findByPk(sellerId);
 
     if (!seller) {
-      return res.status(404).send({ message: "Seller not found" });
+      return res.status(404).send({ message: "卖家不存在" });
     }
     if (seller.role !== "seller") {
-      return res.status(400).send({ message: "Target user is not a seller" });
+      return res.status(400).send({ message: "目标用户不是卖家" });
     }
 
     const restoreReason = String(reason || "").trim();
     if (!restoreReason) {
-      return res.status(400).send({ message: "Restore reason is required" });
+      return res.status(400).send({ message: "恢复原因不能为空" });
     }
 
     const restoreResult = await removeSellerFromBlacklist(seller, {
@@ -445,7 +462,7 @@ exports.unblacklistSeller = async (req, res) => {
     });
 
     return res.send({
-      message: "Seller restored successfully",
+      message: "卖家已恢复",
       restoredScore: restoreResult.restoredScore ?? DEFAULT_RESTORE_SCORE,
       txHash: restoreResult.receipt?.transactionHash || null,
     });
@@ -454,17 +471,65 @@ exports.unblacklistSeller = async (req, res) => {
   }
 };
 
+exports.bindWallet = async (req, res) => {
+  try {
+    const walletAddress = normalizeOptionalString(req.body.walletAddress);
+    const user = await User.findByPk(req.userId);
+
+    if (!user) {
+      return res.status(404).send({ message: "用户不存在" });
+    }
+    if (!["buyer", "seller"].includes(user.role)) {
+      return res.status(403).send({ message: "仅买家和卖家可以绑定钱包" });
+    }
+    if (!walletAddress || !web3.utils.isAddress(walletAddress)) {
+      return res.status(400).send({ message: "请输入有效的钱包地址" });
+    }
+
+    user.ethAddress = walletAddress;
+    user.walletBound = true;
+    await user.save();
+
+    await auditService.record({
+      operator: req.user,
+      action: user.role === "seller" ? "SELLER_WALLET_BOUND" : "BUYER_WALLET_BOUND",
+      targetType: "USER",
+      targetId: user.id,
+      result: "SUCCESS",
+      details: { walletAddress },
+      req,
+    });
+
+    return res.send({
+      message: "钱包绑定成功",
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        status: user.status,
+        ethAddress: user.ethAddress,
+        walletBound: Boolean(user.walletBound),
+      },
+    });
+  } catch (error) {
+    return res.status(500).send({ message: error.message });
+  }
+};
+
+exports.bindSellerWallet = exports.bindWallet;
+
 exports.getUsers = async (req, res) => {
   try {
     const page = parsePositiveInteger(req.query.page, 1, 100000);
     const pageSize = parsePositiveInteger(req.query.pageSize || req.query.limit, 10, 100);
     const roleFilter = normalizeRole(req.query.role);
     const statusFilter = normalizeStatus(req.query.status, null);
+    const walletBoundFilter = normalizeBooleanFilter(req.query.walletBound);
     const keyword = normalizeOptionalString(req.query.q);
     const visibleRoles = getUserScopeForOperator(req.user);
 
     if (visibleRoles.length === 0) {
-      return res.status(403).send({ message: "You do not have permission to view users" });
+      return res.status(403).send({ message: "无权查看用户列表" });
     }
 
     const where = {
@@ -473,6 +538,9 @@ exports.getUsers = async (req, res) => {
 
     if (statusFilter !== null) {
       where.status = statusFilter;
+    }
+    if (walletBoundFilter !== null) {
+      where.walletBound = walletBoundFilter;
     }
     if (keyword) {
       where[Op.or] = [
@@ -489,6 +557,7 @@ exports.getUsers = async (req, res) => {
         "role",
         "status",
         "ethAddress",
+        "walletBound",
         "qualificationType",
         "isBlacklisted",
         "frozenReason",
@@ -532,17 +601,17 @@ exports.updateUserStatus = async (req, res) => {
     const user = await User.findByPk(userId);
 
     if (!user) {
-      return res.status(404).send({ message: "User not found" });
+      return res.status(404).send({ message: "用户不存在" });
     }
     if (nextStatus === null || ![1, 2].includes(nextStatus)) {
-      return res.status(400).send({ message: "Status must be 1(active) or 2(frozen)" });
+      return res.status(400).send({ message: "状态必须为正常或冻结" });
     }
     if (!canManageUser(req.user, user)) {
-      await auditService.recordAccessDenied(req, ["regulator", "admin"]);
-      return res.status(403).send({ message: "You do not have permission to manage this user" });
+      await auditService.recordAccessDenied(req, [PRIVILEGED_ROLE]);
+      return res.status(403).send({ message: "无权治理该用户" });
     }
     if (nextStatus === 2 && !governanceReason) {
-      return res.status(400).send({ message: "Freeze reason is required" });
+      return res.status(400).send({ message: "冻结原因不能为空" });
     }
 
     user.status = nextStatus;
@@ -570,7 +639,7 @@ exports.updateUserStatus = async (req, res) => {
     });
 
     return res.send({
-      message: nextStatus === 2 ? "User frozen successfully" : "User restored successfully",
+      message: nextStatus === 2 ? "用户已冻结" : "用户已恢复正常",
       user: serializeManagedUser(user, req.user),
     });
   } catch (error) {

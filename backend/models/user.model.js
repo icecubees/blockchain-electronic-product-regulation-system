@@ -5,6 +5,7 @@ module.exports = (sequelize, Sequelize) => {
     role: { type: Sequelize.STRING, allowNull: false },
     status: { type: Sequelize.INTEGER, defaultValue: 1 },
     ethAddress: { type: Sequelize.STRING },
+    walletBound: { type: Sequelize.BOOLEAN, defaultValue: false },
     qualificationType: { type: Sequelize.STRING },
     brandAuthorizationHash: { type: Sequelize.STRING },
     repairQualificationHash: { type: Sequelize.STRING },

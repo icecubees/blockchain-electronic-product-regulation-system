@@ -33,7 +33,7 @@ router.post(
 
 router.post(
   "/after-sales-evidence",
-  [verifyToken, requireRoles("seller", "regulator", "admin"), upload.single("file")],
+  [verifyToken, requireRoles("seller", "regulator"), upload.single("file")],
   controller.uploadAfterSalesEvidence
 );
 

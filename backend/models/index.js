@@ -26,6 +26,7 @@ db.afterSalesRecord = require("./after-sales-record.model.js")(sequelize, Sequel
 db.afterSalesRequest = require("./after-sales-request.model.js")(sequelize, Sequelize);
 db.integrationJob = require("./integration-job.model.js")(sequelize, Sequelize);
 db.recallNotification = require("./recall-notification.model.js")(sequelize, Sequelize);
+db.systemSetting = require("./system-setting.model.js")(sequelize, Sequelize);
 
 db.product.belongsTo(db.user, { as: "seller", foreignKey: "sellerId" });
 db.product.hasMany(db.afterSalesRecord, { as: "afterSalesRecords", foreignKey: "productId" });

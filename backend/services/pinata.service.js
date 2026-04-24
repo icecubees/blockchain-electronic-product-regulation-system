@@ -2,6 +2,7 @@ const axios = require("axios");
 const FormData = require("form-data");
 
 const PINATA_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS";
+const PINATA_AUTH_TEST_URL = "https://api.pinata.cloud/data/testAuthentication";
 
 function getPinataHeaders() {
   const apiKey = process.env.PINATA_API_KEY;
@@ -45,6 +46,33 @@ async function uploadBufferToIpfs({
   return response.data.IpfsHash;
 }
 
+async function getPinataHealth() {
+  if (!process.env.PINATA_API_KEY || !process.env.PINATA_SECRET_API_KEY) {
+    return {
+      status: "not_configured",
+      message: "未配置 Pinata 凭据，文件上传将进入人工补偿流程",
+    };
+  }
+
+  try {
+    await axios.get(PINATA_AUTH_TEST_URL, {
+      headers: getPinataHeaders(),
+      timeout: 3000,
+    });
+
+    return {
+      status: "online",
+      message: "Pinata/IPFS 上传凭据可用",
+    };
+  } catch (error) {
+    return {
+      status: "offline",
+      message: error.message,
+    };
+  }
+}
+
 module.exports = {
   uploadBufferToIpfs,
+  getPinataHealth,
 };

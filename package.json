@@ -1,6 +1,8 @@
 {
   "scripts": {
     "init:privileged-user": "node backend/scripts/init-privileged-user.js",
+    "migrate": "npm --prefix backend run migrate",
+    "migrate:down": "npm --prefix backend run migrate:down",
     "test": "npm run test:backend && npm run test:frontend && npm run test:blockchain",
     "test:backend": "npm --prefix backend test",
     "test:frontend": "npm --prefix frontend test",

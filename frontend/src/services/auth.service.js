@@ -42,6 +42,17 @@ const getCurrentUser = () => {
   return JSON.parse(localStorage.getItem("user"));
 };
 
+const updateCurrentUser = (patch = {}) => {
+  const currentUser = getCurrentUser();
+  if (!currentUser) {
+    return null;
+  }
+
+  const nextUser = { ...currentUser, ...patch };
+  localStorage.setItem("user", JSON.stringify(nextUser));
+  return nextUser;
+};
+
 const getPendingSellers = () => {
   return axios.get(API_URL + "pending-sellers", { headers: authHeader() });
 };
@@ -66,6 +77,20 @@ const updateUserStatus = (userId, status, reason = "") => {
   );
 };
 
+const bindWallet = (walletAddress) =>
+  axios.patch(API_URL + "wallet", { walletAddress }, { headers: authHeader() }).then(
+    (response) => {
+      if (response.data?.user?.ethAddress) {
+        updateCurrentUser({
+          ethAddress: response.data.user.ethAddress,
+          walletBound: Boolean(response.data.user.walletBound),
+        });
+      }
+      return response;
+    }
+  );
+const bindSellerWallet = bindWallet;
+
 const unblacklistSeller = (sellerId, reason, restoredScore) => {
   return axios.post(
     API_URL + "unblacklist",
@@ -79,11 +104,14 @@ const AuthService = {
   login,
   logout,
   getCurrentUser,
+  updateCurrentUser,
   getPendingSellers,
   getBlacklistedSellers,
   getUsers,
   approveSeller,
   updateUserStatus,
+  bindWallet,
+  bindSellerWallet,
   unblacklistSeller,
 };
 

@@ -17,6 +17,7 @@ contract("ProductRegulation", (accounts) => {
   const buyer = accounts[4];
   let aiOracle;
   let instance;
+  const productPrice = web3.utils.toBN(100);
 
   beforeEach(async () => {
     aiOracle = web3.eth.accounts.create();
@@ -90,11 +91,92 @@ contract("ProductRegulation", (accounts) => {
     assert.equal(tx.logs[0].event, "ProductRecallFlagged");
 
     try {
-      await instance.purchaseProduct(1, buyer, { from: market });
+      await instance.purchaseProduct(1, buyer, { from: market, value: productPrice });
       assert.fail("purchase should fail for recalled products");
     } catch (error) {
       assert.match(error.message, /Product recalled|Out of stock|Product delisted/);
     }
+  });
+
+  it("escrows exact ETH value when a buyer purchases from MetaMask", async () => {
+    const tx = await instance.purchaseProductFromWallet(1, {
+      from: buyer,
+      value: productPrice,
+    });
+    const order = await instance.orders(1);
+    const contractBalance = await web3.eth.getBalance(instance.address);
+
+    assert.equal(contractBalance.toString(), productPrice.toString());
+    assert.equal(order.buyer, buyer);
+    assert.equal(order.seller, seller);
+    assert.equal(order.price.toString(), productPrice.toString());
+    assert.equal(order.escrowAmount.toString(), productPrice.toString());
+    assert.equal(order.fundsSettled, false);
+    assert.equal(order.state.toString(), "0");
+    assert.equal(tx.logs[1].event, "PaymentEscrowed");
+    assert.equal(tx.logs[1].args.amount.toString(), productPrice.toString());
+  });
+
+  it("releases escrowed ETH to the seller after receipt confirmation", async () => {
+    await instance.purchaseProductFromWallet(1, {
+      from: buyer,
+      value: productPrice,
+    });
+
+    const sellerBalanceBefore = web3.utils.toBN(await web3.eth.getBalance(seller));
+    const tx = await instance.confirmReceiptFromWallet(1, { from: buyer });
+    const sellerBalanceAfter = web3.utils.toBN(await web3.eth.getBalance(seller));
+    const order = await instance.orders(1);
+    const contractBalance = await web3.eth.getBalance(instance.address);
+
+    assert.equal(sellerBalanceAfter.sub(sellerBalanceBefore).toString(), productPrice.toString());
+    assert.equal(contractBalance.toString(), "0");
+    assert.equal(order.fundsSettled, true);
+    assert.equal(order.state.toString(), "1");
+    assert.equal(tx.logs[0].event, "FundsReleased");
+  });
+
+  it("refunds escrowed ETH to the buyer when regulator rules for buyer", async () => {
+    await instance.purchaseProductFromWallet(1, {
+      from: buyer,
+      value: productPrice,
+    });
+    await instance.raiseComplaint(1, buyer, "battery issue", { from: market });
+
+    const buyerBalanceAfterPurchase = web3.utils.toBN(await web3.eth.getBalance(buyer));
+    const tx = await instance.resolveComplaint(1, true, "refund", { from: regulator });
+    const buyerBalanceAfterRefund = web3.utils.toBN(await web3.eth.getBalance(buyer));
+    const order = await instance.orders(1);
+    const contractBalance = await web3.eth.getBalance(instance.address);
+
+    assert.equal(
+      buyerBalanceAfterRefund.sub(buyerBalanceAfterPurchase).toString(),
+      productPrice.toString()
+    );
+    assert.equal(contractBalance.toString(), "0");
+    assert.equal(order.fundsSettled, true);
+    assert.equal(order.state.toString(), "4");
+    assert.equal(tx.logs[0].event, "FundsRefunded");
+  });
+
+  it("releases escrowed ETH to the seller when regulator rules for seller", async () => {
+    await instance.purchaseProductFromWallet(1, {
+      from: buyer,
+      value: productPrice,
+    });
+    await instance.raiseComplaint(1, buyer, "battery issue", { from: market });
+
+    const sellerBalanceBefore = web3.utils.toBN(await web3.eth.getBalance(seller));
+    const tx = await instance.resolveComplaint(1, false, "seller evidence accepted", {
+      from: regulator,
+    });
+    const sellerBalanceAfter = web3.utils.toBN(await web3.eth.getBalance(seller));
+    const order = await instance.orders(1);
+
+    assert.equal(sellerBalanceAfter.sub(sellerBalanceBefore).toString(), productPrice.toString());
+    assert.equal(order.fundsSettled, true);
+    assert.equal(order.state.toString(), "1");
+    assert.equal(tx.logs[0].event, "FundsReleased");
   });
 
   it("emits lifecycle events for refurbish and repair actions", async () => {
@@ -128,7 +210,7 @@ contract("ProductRegulation", (accounts) => {
       );
       const signature = buildAuditSignature(aiOracle, index + 2, true);
       await instance.auditProduct(index + 2, true, "approved", signature, { from: regulator });
-      await instance.purchaseProduct(index + 2, buyer, { from: market });
+      await instance.purchaseProduct(index + 2, buyer, { from: market, value: productPrice });
       await instance.raiseComplaint(index + 1, buyer, `issue-${index}`, { from: market });
       await instance.resolveComplaint(index + 1, true, "refund", { from: regulator });
     }

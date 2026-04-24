@@ -189,6 +189,32 @@ async function ensureRuntimeSchema(sequelize, Sequelize) {
     });
   }
 
+  if (!normalizedTables.includes("system_settings")) {
+    await queryInterface.createTable("system_settings", {
+      key: {
+        type: Sequelize.STRING,
+        allowNull: false,
+        primaryKey: true,
+      },
+      value: {
+        type: Sequelize.TEXT("long"),
+        allowNull: false,
+      },
+      description: {
+        type: Sequelize.STRING,
+        allowNull: true,
+      },
+      createdAt: {
+        type: Sequelize.DATE,
+        allowNull: false,
+      },
+      updatedAt: {
+        type: Sequelize.DATE,
+        allowNull: false,
+      },
+    });
+  }
+
   if (normalizedTables.includes("products")) {
     const products = await queryInterface.describeTable("products");
 
@@ -311,6 +337,11 @@ async function ensureRuntimeSchema(sequelize, Sequelize) {
     await ensureColumn(queryInterface, "users", users, "qualificationType", {
       type: Sequelize.STRING,
       allowNull: true,
+    });
+    await ensureColumn(queryInterface, "users", users, "walletBound", {
+      type: Sequelize.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
     });
     await ensureColumn(queryInterface, "users", users, "brandAuthorizationHash", {
       type: Sequelize.STRING,

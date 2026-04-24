@@ -22,6 +22,9 @@ const ACTION_LABELS = {
   SELLER_RESTORED: "卖家恢复",
   PRODUCT_CREATED: "商品提交审核",
   PRODUCT_AI_REJECTED: "AI 预审驳回",
+  PRODUCT_AI_SKIPPED_BY_SETTING: "AI 审核跳过",
+  PRODUCT_AI_DEGRADED_TO_MANUAL_REVIEW: "AI 降级人工审核",
+  AI_AUDIT_SETTING_UPDATED: "AI 审核设置更新",
   PRODUCT_AUDITED: "商品审核完成",
   PRODUCT_REVIEW_BLOCKED: "审核拦截",
   PRODUCT_DELISTED: "商品下架",
@@ -55,6 +58,9 @@ const ACTION_COLORS = {
   SELLER_RESTORED: "text-emerald-400",
   PRODUCT_CREATED: "text-cyan-400",
   PRODUCT_AI_REJECTED: "text-rose-400",
+  PRODUCT_AI_SKIPPED_BY_SETTING: "text-slate-300",
+  PRODUCT_AI_DEGRADED_TO_MANUAL_REVIEW: "text-amber-300",
+  AI_AUDIT_SETTING_UPDATED: "text-cyan-400",
   PRODUCT_AUDITED: "text-green-400",
   PRODUCT_REVIEW_BLOCKED: "text-rose-400",
   PRODUCT_DELISTED: "text-orange-400",
@@ -88,6 +94,7 @@ const TARGET_LABELS = {
   PRODUCT_CERTIFICATE: "资质材料",
   COMPLAINT_EVIDENCE: "买家证据",
   SELLER_COMPLAINT_EVIDENCE: "卖家证据",
+  SYSTEM_SETTING: "系统设置",
 };
 
 const RESULT_STYLES = {
@@ -95,8 +102,60 @@ const RESULT_STYLES = {
   FAIL: "border border-rose-500/20 bg-rose-500/15 text-rose-300",
 };
 
+const RESULT_LABELS = {
+  SUCCESS: "成功",
+  FAIL: "失败",
+};
+
+const CONTRACT_EVENT_LABELS = {
+  SELLER_APPROVED: "SellerRegistered",
+  SELLER_BLACKLISTED: "SellerBlacklisted",
+  SELLER_RESTORED: "SellerRestored",
+  PRODUCT_CREATED: "ProductCreated",
+  PRODUCT_AUDITED: "ProductAudited",
+  PRODUCT_DELISTED: "ProductDelisted",
+  PRODUCT_RECALL_FLAGGED: "ProductRecallFlagged",
+  PRODUCT_COMPLIANCE_UPDATED: "ProductComplianceUpdated",
+  PRODUCT_REFURBISH_DECLARED: "ProductRefurbishDeclared",
+  PRODUCT_REPAIR_RECORDED: "ProductRepairRecorded",
+  WARRANTY_UPDATED: "WarrantyUpdated",
+  PRODUCT_RESTOCKED: "ProductRestocked",
+  PRODUCT_PURCHASED: "PaymentEscrowed",
+  ORDER_SHIPPED: "OrderShipped",
+  ORDER_CONFIRMED: "FundsReleased",
+  ORDER_RATED: "OrderRated",
+  COMPLAINT_RAISED: "ComplaintRaised",
+  COMPLAINT_RESOLVED: "ComplaintResolved / FundsSettled",
+  ORDER_REFUND_COMPLETED: "FundsRefunded",
+};
+
 const FILTER_OPTIONS = [
   { id: "all", label: "全部日志", actions: null },
+  {
+    id: "chain",
+    label: "链上凭证",
+    actions: [
+      "SELLER_APPROVED",
+      "SELLER_BLACKLISTED",
+      "SELLER_RESTORED",
+      "PRODUCT_CREATED",
+      "PRODUCT_AUDITED",
+      "PRODUCT_DELISTED",
+      "PRODUCT_RECALL_FLAGGED",
+      "PRODUCT_COMPLIANCE_UPDATED",
+      "PRODUCT_REFURBISH_DECLARED",
+      "PRODUCT_REPAIR_RECORDED",
+      "WARRANTY_UPDATED",
+      "PRODUCT_RESTOCKED",
+      "PRODUCT_PURCHASED",
+      "ORDER_SHIPPED",
+      "ORDER_CONFIRMED",
+      "ORDER_RATED",
+      "COMPLAINT_RAISED",
+      "COMPLAINT_RESOLVED",
+      "ORDER_REFUND_COMPLETED",
+    ],
+  },
   {
     id: "product",
     label: "商品监管",
@@ -168,8 +227,7 @@ const DETAIL_KEY_LABELS = {
 const ROLE_LABELS = {
   buyer: "买家",
   seller: "卖家",
-  regulator: "监管方",
-  admin: "管理员",
+  regulator: "监督方",
 };
 
 const COMPLAINT_TYPE_LABELS = {
@@ -244,6 +302,28 @@ function formatDetailValue(key, value) {
   }
 
   return value === null || value === undefined || value === "" ? "未提供" : String(value);
+}
+
+function isRealTxHash(value) {
+  return typeof value === "string" && /^0x[a-fA-F0-9]{64}$/.test(value);
+}
+
+function shortenHash(value) {
+  if (!value || value === "未提供") {
+    return "未提供";
+  }
+
+  if (value.length <= 18) {
+    return value;
+  }
+
+  return `${value.slice(0, 10)}...${value.slice(-8)}`;
+}
+
+function getDetailItemValue(detailItems, keys) {
+  const keySet = new Set(keys);
+  const item = detailItems.find((detailItem) => keySet.has(detailItem.key));
+  return item?.value || null;
 }
 
 export default function Dashboard({
@@ -322,10 +402,12 @@ export default function Dashboard({
           timestamp: new Date(log.createdAt || Date.now()).getTime(),
           actionLabel: ACTION_LABELS[log.action] || log.action,
           color: ACTION_COLORS[log.action] || "text-slate-300",
+          contractEvent: CONTRACT_EVENT_LABELS[log.action] || null,
           operator:
             log.operatorUsername ||
-            (log.operatorRole ? `系统(${log.operatorRole})` : "系统"),
+            (log.operatorRole ? `系统(${ROLE_LABELS[log.operatorRole] || log.operatorRole})` : "系统"),
           result: log.result || "SUCCESS",
+          resultLabel: RESULT_LABELS[log.result] || log.result || "成功",
           target: `${TARGET_LABELS[log.targetType] || log.targetType || "目标"}${
             log.targetId ? ` #${log.targetId}` : ""
           }`,
@@ -333,7 +415,10 @@ export default function Dashboard({
             detailItems.length > 0
               ? detailItems
               : [{ key: "details", label: "详情", value: "未提供" }],
+          txHash: log.txHash || null,
+          ipfsHash: log.ipfsHash || null,
           hash: log.txHash || log.ipfsHash || "未提供",
+          hasChainCredential: Boolean(CONTRACT_EVENT_LABELS[log.action] && isRealTxHash(log.txHash)),
         };
       }),
     [auditLogs]
@@ -347,6 +432,25 @@ export default function Dashboard({
 
     return normalizedAuditLogs.filter((item) => selected.actions.includes(item.action));
   }, [normalizedAuditLogs, selectedFilter]);
+
+  const chainCredentialLogs = useMemo(
+    () => normalizedAuditLogs.filter((log) => log.hasChainCredential).slice(0, 4),
+    [normalizedAuditLogs]
+  );
+
+  const chainEvidenceTimeline = useMemo(
+    () =>
+      normalizedAuditLogs
+        .filter((log) => log.contractEvent || log.txHash || log.ipfsHash)
+        .slice(0, 6)
+        .map((log) => ({
+          ...log,
+          orderId: getDetailItemValue(log.detailItems, ["orderId", "chainOrderId"]),
+          productId: getDetailItemValue(log.detailItems, ["chainProductId", "productId"]),
+          ruling: getDetailItemValue(log.detailItems, ["rulingForBuyer", "rulingDetails"]),
+        })),
+    [normalizedAuditLogs]
+  );
 
   const appliedFilterSummary = useMemo(() => {
     const items = [];
@@ -614,8 +718,8 @@ export default function Dashboard({
             className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
           >
             <option value="">全部结果</option>
-            <option value="SUCCESS">SUCCESS</option>
-            <option value="FAIL">FAIL</option>
+            <option value="SUCCESS">成功</option>
+            <option value="FAIL">失败</option>
           </select>
           <select
             value={auditLogFilters.targetType || ""}
@@ -678,6 +782,106 @@ export default function Dashboard({
           </div>
         </div>
 
+        <div className="border-b border-slate-800 bg-slate-950 px-5 py-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold text-slate-100">链上凭证流</div>
+              <div className="mt-1 text-xs text-slate-500">
+                将审计记录、合约事件和交易哈希串联展示，便于答辩时说明监管动作已形成链上凭证。
+              </div>
+            </div>
+            <div className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-slate-300">
+              当前页链上凭证 {chainCredentialLogs.length} 条
+            </div>
+          </div>
+
+          {chainCredentialLogs.length > 0 ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {chainCredentialLogs.map((log) => (
+                <div
+                  key={`credential-${log.id}`}
+                  className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3"
+                >
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded bg-slate-900 px-2 py-1 font-semibold text-emerald-300">
+                      审计记录 #{log.id}
+                    </span>
+                    <span className="rounded bg-slate-900 px-2 py-1 text-cyan-300">
+                      合约事件：{log.contractEvent}
+                    </span>
+                    <span className="text-slate-400">{log.actionLabel}</span>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-300">{log.target}</div>
+                  <div className="mt-2 break-all rounded bg-black/30 px-2 py-1 font-mono text-[11px] text-slate-400">
+                    交易哈希：{shortenHash(log.txHash)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-500">
+              当前页暂无可识别的链上交易哈希。可切换到“链上凭证”分组，或在关键词中搜索交易哈希。
+            </div>
+          )}
+
+          <div className="mt-5 border-t border-slate-800 pt-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-slate-100">链上证据时间线</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  按时间串联操作人、目标对象、合约事件、交易哈希与裁决结果。
+                </div>
+              </div>
+              <div className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-slate-300">
+                最近 {chainEvidenceTimeline.length} 条
+              </div>
+            </div>
+
+            {chainEvidenceTimeline.length > 0 ? (
+              <div className="space-y-3">
+                {chainEvidenceTimeline.map((log, index) => (
+                  <div key={`timeline-${log.id}`} className="relative pl-5">
+                    <span className="absolute left-0 top-2 h-2.5 w-2.5 rounded-full bg-cyan-400" />
+                    {index < chainEvidenceTimeline.length - 1 && (
+                      <span className="absolute bottom-[-0.75rem] left-[4px] top-5 w-px bg-slate-800" />
+                    )}
+                    <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className={`font-semibold ${log.color}`}>{log.actionLabel}</span>
+                        <span className="text-slate-500">
+                          {new Date(log.timestamp).toLocaleString()}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 ${
+                            RESULT_STYLES[log.result] || "border border-slate-700 text-slate-300"
+                          }`}
+                        >
+                          {log.resultLabel}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
+                        <div>操作人：{log.operator}</div>
+                        <div>目标：{log.target}</div>
+                        <div>合约事件：{log.contractEvent || "未匹配"}</div>
+                        <div>订单：{log.orderId || "未提供"}</div>
+                        <div>商品：{log.productId || "未提供"}</div>
+                        <div>裁决：{log.ruling || "未提供"}</div>
+                      </div>
+                      <div className="mt-2 break-all rounded bg-black/30 px-2 py-1 font-mono text-[11px] text-slate-500">
+                        交易哈希：{log.txHash ? shortenHash(log.txHash) : "未提供"}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-500">
+                当前页暂无可串联的链上证据。
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="custom-scrollbar flex-1 space-y-3 overflow-y-auto p-5 font-mono text-sm">
           {auditLogLoading ? (
             <div className="mt-10 text-center text-slate-500">日志检索中...</div>
@@ -697,8 +901,16 @@ export default function Dashboard({
                       RESULT_STYLES[log.result] || "border border-slate-700 text-slate-300"
                     }`}
                   >
-                    {log.result}
+                    {log.resultLabel}
                   </span>
+                  <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-slate-300">
+                    审计记录 #{log.id}
+                  </span>
+                  {log.contractEvent ? (
+                    <span className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 text-cyan-300">
+                      合约事件：{log.contractEvent}
+                    </span>
+                  ) : null}
                 </div>
 
                 <div className="mt-2 grid grid-cols-1 gap-2 text-xs md:grid-cols-2">
@@ -725,8 +937,23 @@ export default function Dashboard({
                   </div>
                 </div>
 
-                <div className="mt-2 inline-block break-all rounded bg-black/30 px-2 py-0.5 text-xs text-slate-500">
-                  交易哈希 / IPFS：{log.hash}
+                <div className="mt-3 grid gap-2 text-xs lg:grid-cols-2">
+                  <div className="break-all rounded bg-black/30 px-2 py-1 text-slate-500">
+                    <span className="text-slate-400">交易哈希：</span>
+                    {log.txHash ? (
+                      <span title={log.txHash}>{shortenHash(log.txHash)}</span>
+                    ) : (
+                      "未提供"
+                    )}
+                  </div>
+                  <div className="break-all rounded bg-black/30 px-2 py-1 text-slate-500">
+                    <span className="text-slate-400">IPFS 证据：</span>
+                    {log.ipfsHash ? (
+                      <span title={log.ipfsHash}>{shortenHash(log.ipfsHash)}</span>
+                    ) : (
+                      "未提供"
+                    )}
+                  </div>
                 </div>
               </div>
             ))

@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import ProductService from "../services/product.service";
 import FileService from "../services/file.service";
 import AuthService from "../services/auth.service";
+import SellerWalletBinder from "../components/SellerWalletBinder";
 
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
 
@@ -133,12 +134,48 @@ function formatOrderAmount(value) {
   return Number.isFinite(Number(value)) ? `${Number(value)} ETH` : "0 ETH";
 }
 
+function decimalWeiToHex(value) {
+  let decimal = String(value || "0").replace(/^0+/, "");
+  if (!decimal) {
+    return "0x0";
+  }
+
+  const hexDigits = [];
+  while (decimal) {
+    let carry = 0;
+    let next = "";
+
+    for (let index = 0; index < decimal.length; index += 1) {
+      const current = carry * 10 + Number(decimal[index]);
+      const digit = Math.floor(current / 16);
+      carry = current % 16;
+      if (next || digit > 0) {
+        next += String(digit);
+      }
+    }
+
+    hexDigits.push(carry.toString(16));
+    decimal = next;
+  }
+
+  return `0x${hexDigits.reverse().join("")}`;
+}
+
+async function requestCurrentWalletAccount() {
+  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  const account = accounts?.[0];
+  if (!account) {
+    throw new Error("未选择 MetaMask 账户");
+  }
+  return account;
+}
+
 function getProductTraceId(order) {
   return order.product?.id || order.productId || order.product?.productId;
 }
 
 function getOrderTraceViewerRole(user) {
-  if (user?.role === "regulator" || user?.role === "admin") {
+  if (user?.role === "regulator") {
     return "regulator";
   }
   if (user?.role === "seller") {
@@ -302,7 +339,7 @@ function OrderTracePanel({ order, currentUser }) {
           </p>
         </div>
         <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-indigo-700">
-          {viewerRole === "seller" ? "商家可见" : viewerRole === "regulator" ? "监管可见" : "买家可见"}
+          {viewerRole === "seller" ? "商家可见" : viewerRole === "regulator" ? "监督可见" : "买家可见"}
         </span>
       </div>
 
@@ -408,6 +445,18 @@ export default function OrderCenter() {
 
   const navigate = useNavigate();
 
+  const handleWalletBound = (walletAddress) => {
+    setCurrentUser((previous) =>
+      previous
+        ? {
+            ...previous,
+            ethAddress: walletAddress,
+            walletBound: true,
+          }
+        : previous
+    );
+  };
+
   useEffect(() => {
     const user = AuthService.getCurrentUser();
     if (!user) {
@@ -492,8 +541,28 @@ export default function OrderCenter() {
   const handleConfirm = async (orderId) => {
     setLoading(true);
     try {
-      await ProductService.confirmReceipt(orderId);
-      window.alert("确认收货成功，现在可以提交评价。");
+      if (window.ethereum) {
+        const response = await ProductService.prepareWalletConfirmReceipt(orderId);
+        const txConfig = response.data;
+        const from = await requestCurrentWalletAccount();
+        const txHash = await window.ethereum.request({
+          method: "eth_sendTransaction",
+          params: [
+            {
+              from,
+              to: txConfig.contractAddress,
+              data: txConfig.data,
+              value: decimalWeiToHex(txConfig.value),
+            },
+          ],
+        });
+
+        await ProductService.finalizeWalletConfirmReceipt(orderId, txHash);
+        window.alert("确认收货成功，托管资金已由合约释放给卖家。现在可以提交评价。");
+      } else {
+        await ProductService.confirmReceipt(orderId);
+        window.alert("确认收货成功，现在可以提交评价。");
+      }
       loadOrders();
     } catch (error) {
       window.alert(`操作失败：${error.response?.data?.message || error.message}`);
@@ -731,6 +800,10 @@ export default function OrderCenter() {
       </div>
 
       <div className="mx-auto max-w-7xl space-y-4 px-4 py-8">
+        {currentUser?.role === "buyer" ? (
+          <SellerWalletBinder accountRole="buyer" onWalletBound={handleWalletBound} />
+        ) : null}
+
         {loading ? <div className="text-center font-bold text-indigo-600">正在同步订单状态...</div> : null}
 
         {orders.map((order) => {
@@ -783,7 +856,7 @@ export default function OrderCenter() {
                         onClick={() => navigate(`/trace?productId=${encodeURIComponent(productTraceId)}`)}
                         className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
                       >
-                        Product trace
+                        商品溯源
                       </button>
                     ) : null}
                     <button
@@ -791,7 +864,7 @@ export default function OrderCenter() {
                       onClick={() => toggleOrderTrace(order.id)}
                       className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
                     >
-                      {isTraceExpanded ? "Hide order trace" : "Order trace"}
+                      {isTraceExpanded ? "收起订单溯源" : "订单溯源"}
                     </button>
                   </div>
                 </div>

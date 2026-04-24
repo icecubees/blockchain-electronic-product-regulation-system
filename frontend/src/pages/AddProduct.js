@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import ProductService from "../services/product.service";
 import FileService from "../services/file.service";
 import AuthService from "../services/auth.service";
+import SellerWalletBinder from "../components/SellerWalletBinder";
 
 const CATEGORY_OPTIONS = [
   { value: "mobile_phone", label: "手机" },
@@ -66,12 +67,25 @@ const INITIAL_FORM = {
   description: "",
 };
 
+async function requestCurrentWalletAccount() {
+  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  const account = accounts?.[0];
+  if (!account) {
+    throw new Error("未选择 MetaMask 账户");
+  }
+  return account;
+}
+
 const AddProduct = () => {
   const [form, setForm] = useState(INITIAL_FORM);
   const [fileReport, setFileReport] = useState(null);
   const [fileCert, setFileCert] = useState(null);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const initialUser = AuthService.getCurrentUser();
+  const [sellerWallet, setSellerWallet] = useState(
+    initialUser?.walletBound ? initialUser.ethAddress || "" : ""
+  );
 
   const navigate = useNavigate();
 
@@ -108,6 +122,16 @@ const AddProduct = () => {
         throw new Error("请同时上传检测报告和资质材料。");
       }
 
+      let latestSellerWallet = sellerWallet;
+      if (window.ethereum) {
+        setMessage("正在确认当前 MetaMask 卖家账户...");
+        latestSellerWallet = await requestCurrentWalletAccount();
+      }
+
+      if (!latestSellerWallet) {
+        throw new Error("请先绑定商家 MetaMask 钱包。");
+      }
+
       setMessage("正在上传检测报告...");
       const reportUpload = await FileService.uploadProductReport(fileReport);
 
@@ -119,6 +143,7 @@ const AddProduct = () => {
         ...form,
         ipfsHash: reportUpload.data.ipfsHash,
         qualificationHash: certUpload.data.ipfsHash,
+        sellerWallet: latestSellerWallet,
       };
       const response = await ProductService.addProduct(payload, fileReport);
 
@@ -151,6 +176,9 @@ const AddProduct = () => {
         </div>
 
         <div className="mt-8 rounded-lg bg-white px-6 py-8 shadow">
+          <div className="mb-8">
+            <SellerWalletBinder accountRole="seller" onWalletBound={setSellerWallet} />
+          </div>
           <form onSubmit={handleSubmit} className="space-y-8">
             <section className="space-y-4">
               <div>

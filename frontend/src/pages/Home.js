@@ -5,9 +5,11 @@ import { QRCodeCanvas } from "qrcode.react";
 import ProductService from "../services/product.service";
 import AuthService from "../services/auth.service";
 import AuditLogService from "../services/audit-log.service";
+import SystemSettingService from "../services/system-setting.service";
 import BlacklistSellerManager from "../components/BlacklistSellerManager";
 import Dashboard from "../components/Dashboard";
 import RegulatorReviewQueues from "../components/RegulatorReviewQueues";
+import SellerWalletBinder from "../components/SellerWalletBinder";
 
 const PAGE_SIZE = 8;
 const REGULATOR_PAGE_SIZE = 10;
@@ -89,6 +91,7 @@ const INITIAL_USER_FILTERS = {
   q: "",
   role: "",
   status: "",
+  walletBound: "",
   page: 1,
   pageSize: REGULATOR_PAGE_SIZE,
 };
@@ -108,8 +111,7 @@ const USER_ROLE_OPTIONS = [
   { value: "", label: "全部角色" },
   { value: "buyer", label: "买家" },
   { value: "seller", label: "卖家" },
-  { value: "regulator", label: "监管员" },
-  { value: "admin", label: "管理员" },
+  { value: "regulator", label: "监督方" },
 ];
 
 const USER_STATUS_OPTIONS = [
@@ -117,6 +119,12 @@ const USER_STATUS_OPTIONS = [
   { value: "0", label: "待审核" },
   { value: "1", label: "正常" },
   { value: "2", label: "已冻结" },
+];
+
+const WALLET_BOUND_OPTIONS = [
+  { value: "", label: "全部钱包状态" },
+  { value: "true", label: "已绑定钱包" },
+  { value: "false", label: "未绑定钱包" },
 ];
 
 const REGULATOR_NAV_ITEMS = [
@@ -132,7 +140,11 @@ const REGULATOR_SECTION_KEYS = REGULATOR_NAV_ITEMS.map((item) => item.key);
 const REGULATOR_SCROLL_OFFSET = 112;
 
 function isRegulatorUser(user) {
-  return user?.role === "regulator" || user?.role === "admin";
+  return user?.role === "regulator";
+}
+
+function getUserRoleLabel(role) {
+  return USER_ROLE_OPTIONS.find((option) => option.value === role)?.label || role;
 }
 
 function buildTraceUrl(product) {
@@ -161,6 +173,33 @@ function getPagination(response, fallbackPage) {
 
 function getErrorMessage(error) {
   return error?.response?.data?.message || error?.message || "未知错误";
+}
+
+function decimalWeiToHex(value) {
+  let decimal = String(value || "0").replace(/^0+/, "");
+  if (!decimal) {
+    return "0x0";
+  }
+
+  const hexDigits = [];
+  while (decimal) {
+    let carry = 0;
+    let next = "";
+
+    for (let index = 0; index < decimal.length; index += 1) {
+      const current = carry * 10 + Number(decimal[index]);
+      const digit = Math.floor(current / 16);
+      carry = current % 16;
+      if (next || digit > 0) {
+        next += String(digit);
+      }
+    }
+
+    hexDigits.push(carry.toString(16));
+    decimal = next;
+  }
+
+  return `0x${hexDigits.reverse().join("")}`;
 }
 
 function getComplaintOrderId(complaint) {
@@ -199,6 +238,141 @@ function getRiskLabel(product) {
   return "";
 }
 
+function shortenAddress(value) {
+  if (!value) {
+    return "未提供";
+  }
+
+  return value.length > 18 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
+}
+
+function getHealthTone(status) {
+  if (status === "online") {
+    return {
+      dot: "bg-emerald-500",
+      badge: "border-emerald-200 bg-emerald-50 text-emerald-700",
+      label: "正常",
+    };
+  }
+
+  if (status === "disabled" || status === "not_configured") {
+    return {
+      dot: "bg-amber-500",
+      badge: "border-amber-200 bg-amber-50 text-amber-700",
+      label: status === "disabled" ? "已关闭" : "未配置",
+    };
+  }
+
+  if (status === "degraded") {
+    return {
+      dot: "bg-orange-500",
+      badge: "border-orange-200 bg-orange-50 text-orange-700",
+      label: "需检查",
+    };
+  }
+
+  if (status === "offline") {
+    return {
+      dot: "bg-rose-500",
+      badge: "border-rose-200 bg-rose-50 text-rose-700",
+      label: "异常",
+    };
+  }
+
+  return {
+    dot: "bg-slate-400",
+    badge: "border-slate-200 bg-slate-50 text-slate-600",
+    label: "待检测",
+  };
+}
+
+function SystemStatusPanel({ health, loading, onRefresh }) {
+  const items = [
+    {
+      key: "blockchain",
+      label: "Ganache / 托管合约",
+      status: health?.blockchain?.status,
+      message: health?.blockchain?.message || "等待检测链服务状态",
+      detail: health?.blockchain?.contractAddress
+        ? `合约 ${shortenAddress(health.blockchain.contractAddress)}`
+        : "合约地址未返回",
+    },
+    {
+      key: "aiAudit",
+      label: "AI 预审核",
+      status: health?.aiAudit?.status,
+      message: health?.aiAudit?.message || "等待检测 AI 审核开关",
+      detail: health?.aiAudit?.enabled ? "发布商品会先进入 AI 预审" : "发布商品直接进入人工审核",
+    },
+    {
+      key: "database",
+      label: "数据库 / 迁移",
+      status: health?.database?.status,
+      message: health?.database?.message || "等待检测数据库连接",
+      detail: health?.database?.migrationTableReady
+        ? `已记录 ${health.database.executedMigrationCount || 0} 条迁移`
+        : "迁移表未检测到",
+    },
+    {
+      key: "pinata",
+      label: "IPFS / Pinata",
+      status: health?.pinata?.status,
+      message: health?.pinata?.message || "等待检测文件上传凭据",
+      detail: health?.pinata?.status === "online" ? "链下证据上传可用" : "不可用时进入补偿流程",
+    },
+  ];
+
+  return (
+    <div className="mb-4 rounded-3xl border border-slate-200 bg-white p-5 shadow">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-500">演示环境状态</div>
+          <h2 className="mt-1 text-xl font-bold text-slate-900">区块链监管链路检查</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            展示数据库、Ganache 合约、AI 审核与 IPFS 上传的当前可用状态。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+        >
+          {loading ? "检测中..." : "刷新状态"}
+        </button>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {items.map((item) => {
+          const tone = getHealthTone(item.status);
+
+          return (
+            <div key={item.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <span className={`h-2.5 w-2.5 rounded-full ${tone.dot}`} />
+                  {item.label}
+                </div>
+                <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${tone.badge}`}>
+                  {tone.label}
+                </span>
+              </div>
+              <div className="mt-3 text-sm text-slate-600">{item.message}</div>
+              <div className="mt-2 break-all text-xs text-slate-500">{item.detail}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {health?.generatedAt && (
+        <div className="mt-3 text-xs text-slate-400">
+          最近检测：{new Date(health.generatedAt).toLocaleString()}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ComplaintEvidenceLink({ hash, label }) {
   if (!hash) {
     return null;
@@ -226,6 +400,10 @@ export default function Home() {
   const [complaints, setComplaints] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [dashboardStats, setDashboardStats] = useState(null);
+  const [aiAuditEnabled, setAiAuditEnabled] = useState(true);
+  const [aiAuditSettingLoading, setAiAuditSettingLoading] = useState(false);
+  const [systemHealth, setSystemHealth] = useState(null);
+  const [systemHealthLoading, setSystemHealthLoading] = useState(false);
   const [managedUsers, setManagedUsers] = useState([]);
   const [pendingProductFilters, setPendingProductFilters] = useState(INITIAL_PENDING_PRODUCT_FILTERS);
   const [appliedPendingProductFilters, setAppliedPendingProductFilters] = useState(
@@ -267,6 +445,10 @@ export default function Home() {
   const [delistModal, setDelistModal] = useState(INITIAL_DELIST_MODAL);
   const [recallModal, setRecallModal] = useState(INITIAL_RECALL_MODAL);
   const [activeRegulatorSection, setActiveRegulatorSection] = useState("dashboard");
+  const initialDataLoadersRef = useRef({
+    loadMarketProducts: null,
+    reloadRegulatorData: null,
+  });
   const pendingRegulatorSectionRef = useRef(null);
   const pendingRegulatorTimerRef = useRef(null);
 
@@ -275,10 +457,10 @@ export default function Home() {
   useEffect(() => {
     const user = AuthService.getCurrentUser();
     setCurrentUser(user || null);
-    loadMarketProducts(1, INITIAL_FILTERS);
+    initialDataLoadersRef.current.loadMarketProducts?.(1, INITIAL_FILTERS);
 
     if (isRegulatorUser(user)) {
-      reloadRegulatorData(user);
+      initialDataLoadersRef.current.reloadRegulatorData?.(user);
     }
   }, []);
 
@@ -507,6 +689,45 @@ export default function Home() {
     }
   };
 
+  const loadAiAuditSetting = async (user = currentUser) => {
+    if (!isRegulatorUser(user)) {
+      return;
+    }
+
+    try {
+      const response = await SystemSettingService.getAiAuditSetting();
+      setAiAuditEnabled(Boolean(response?.data?.enabled));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const loadSystemHealth = async (user = currentUser) => {
+    if (!isRegulatorUser(user)) {
+      return;
+    }
+
+    setSystemHealthLoading(true);
+    try {
+      const response = await SystemSettingService.getSystemHealth();
+      setSystemHealth(response?.data || null);
+    } catch (error) {
+      setSystemHealth({
+        generatedAt: new Date().toISOString(),
+        database: { status: "offline", message: getErrorMessage(error) },
+        blockchain: { status: "offline", message: "系统状态接口不可用" },
+        aiAudit: {
+          status: aiAuditEnabled ? "online" : "disabled",
+          enabled: aiAuditEnabled,
+          message: aiAuditEnabled ? "AI 预审核开关已开启" : "AI 预审核开关已关闭",
+        },
+        pinata: { status: "offline", message: "系统状态接口不可用" },
+      });
+    } finally {
+      setSystemHealthLoading(false);
+    }
+  };
+
   const reloadRegulatorData = async (user = currentUser) => {
     if (!isRegulatorUser(user)) {
       return;
@@ -520,7 +741,14 @@ export default function Home() {
       loadComplaints(user, appliedComplaintFilters),
       loadAuditLogs(user, appliedAuditLogFilters),
       loadAuditStats(user),
+      loadAiAuditSetting(user),
+      loadSystemHealth(user),
     ]);
+  };
+
+  initialDataLoadersRef.current = {
+    loadMarketProducts,
+    reloadRegulatorData,
   };
 
   const refreshAfterMutation = async () => {
@@ -636,8 +864,34 @@ export default function Home() {
   const handlePurchase = async (productId) => {
     setLoading(true);
     try {
-      await ProductService.purchaseProduct(productId);
-      window.alert("购买成功，请前往订单中心查看。");
+      if (window.ethereum) {
+        const response = await ProductService.prepareWalletPurchase(productId);
+        const txConfig = response.data;
+        const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+        const from = accounts?.[0];
+
+        if (!from) {
+          throw new Error("未选择 MetaMask 账户");
+        }
+
+        const txHash = await window.ethereum.request({
+          method: "eth_sendTransaction",
+          params: [
+            {
+              from,
+              to: txConfig.contractAddress,
+              data: txConfig.data,
+              value: decimalWeiToHex(txConfig.value),
+            },
+          ],
+        });
+
+        await ProductService.finalizeWalletPurchase(productId, txHash);
+        window.alert("链上托管购买成功，ETH 已锁定在合约中。请前往订单中心查看。");
+      } else {
+        await ProductService.purchaseProduct(productId);
+        window.alert("购买成功，请前往订单中心查看。");
+      }
       setPurchaseModal(INITIAL_PURCHASE_MODAL);
       await refreshAfterMutation();
     } catch (error) {
@@ -733,6 +987,25 @@ export default function Home() {
     }
   };
 
+  const handleToggleAiAudit = async () => {
+    const nextEnabled = !aiAuditEnabled;
+    setAiAuditSettingLoading(true);
+    try {
+      const response = await SystemSettingService.updateAiAuditSetting(nextEnabled);
+      setAiAuditEnabled(Boolean(response?.data?.enabled));
+      window.alert(nextEnabled ? "AI 审核已开启。" : "AI 审核已关闭，商品将直接进入人工审核。");
+      await Promise.all([
+        loadAuditLogs(currentUser, appliedAuditLogFilters),
+        loadAuditStats(currentUser),
+        loadSystemHealth(currentUser),
+      ]);
+    } catch (error) {
+      window.alert(`AI 审核设置更新失败：${getErrorMessage(error)}`);
+    } finally {
+      setAiAuditSettingLoading(false);
+    }
+  };
+
   const handleRestoreSeller = async (sellerId, reason, restoredScore) => {
     setLoading(true);
     try {
@@ -773,6 +1046,21 @@ export default function Home() {
     }
   };
 
+  const copyWalletAddress = async (walletAddress) => {
+    if (!walletAddress) {
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(walletAddress);
+      }
+      window.alert("钱包地址已复制。");
+    } catch (error) {
+      window.alert("复制失败，请手动复制钱包地址。");
+    }
+  };
+
   const openPurchaseModal = (product) => setPurchaseModal({ product });
   const openDelistModal = (product) =>
     setDelistModal({
@@ -804,7 +1092,18 @@ export default function Home() {
     return currentUser.role === "seller" && product?.seller?.id === currentUser.id;
   };
 
-  const marketSummaryText = `Current page ${products.length} items, ${marketPagination.total} total`;
+  const marketSummaryText = `当前页 ${products.length} 件商品，共 ${marketPagination.total} 件`;
+  const handleWalletBound = (walletAddress) => {
+    setCurrentUser((previous) =>
+      previous
+        ? {
+            ...previous,
+            ethAddress: walletAddress,
+            walletBound: true,
+          }
+        : previous
+    );
+  };
 
   const scrollToRegulatorSection = (sectionKey) => {
     pendingRegulatorSectionRef.current = sectionKey;
@@ -830,7 +1129,7 @@ export default function Home() {
             <h1 className="text-2xl font-bold text-slate-900">电子产品交易监管平台</h1>
             <p className="mt-1 text-sm text-slate-500">
               {currentUser
-                ? `${currentUser.username} / ${currentUser.role}`
+                ? `${currentUser.username} / ${getUserRoleLabel(currentUser.role)}`
                 : "欢迎进入电子产品交易监管平台"}
             </p>
           </div>
@@ -892,12 +1191,12 @@ export default function Home() {
           {isRegulator && (
             <aside className="regulator-sidebar h-fit rounded-3xl bg-slate-900 p-4 text-white shadow-lg lg:sticky lg:top-28">
               <div className="border-b border-white/10 pb-4">
-                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">
-                  Regulator Console
+                <div className="text-xs font-semibold tracking-[0.24em] text-slate-300">
+                  监督控制台
                 </div>
-                <h2 className="mt-2 text-xl font-bold">监管方工作台</h2>
+                <h2 className="mt-2 text-xl font-bold">监督方工作台</h2>
                 <p className="mt-2 text-sm text-slate-300">
-                  点击左侧模块可快速定位到对应监管项目。
+                  点击左侧模块可快速定位到对应监督项目。
                 </p>
               </div>
 
@@ -931,6 +1230,45 @@ export default function Home() {
         {isRegulator && (
           <>
             <section id="regulator-section-dashboard" className="scroll-mt-40">
+              <SystemStatusPanel
+                health={systemHealth}
+                loading={systemHealthLoading}
+                onRefresh={() => loadSystemHealth(currentUser)}
+              />
+              <div className="mb-4 rounded-3xl border border-slate-200 bg-white p-5 shadow">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-500">智能审核控制</div>
+                    <h2 className="mt-1 text-xl font-bold text-slate-900">
+                      AI 预审核：{aiAuditEnabled ? "已开启" : "已关闭"}
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-500">
+                      关闭后，卖家发布或重新提交商品时不会调用 AI 服务，商品会直接进入人工审核队列。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={aiAuditEnabled}
+                    onClick={handleToggleAiAudit}
+                    disabled={aiAuditSettingLoading}
+                    className={`relative h-11 w-36 rounded-full px-2 text-sm font-semibold transition disabled:opacity-60 ${
+                      aiAuditEnabled
+                        ? "bg-emerald-600 text-white"
+                        : "bg-slate-800 text-white"
+                    }`}
+                  >
+                    <span className={`absolute top-1/2 -translate-y-1/2 ${aiAuditEnabled ? "left-4" : "right-4"}`}>
+                      {aiAuditEnabled ? "开启中" : "已关闭"}
+                    </span>
+                    <span
+                      className={`absolute top-1.5 h-8 w-8 rounded-full bg-white shadow transition ${
+                        aiAuditEnabled ? "right-1.5" : "left-1.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
               <Dashboard
               products={products}
               pendingProducts={pendingProducts}
@@ -1197,12 +1535,12 @@ export default function Home() {
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">用户治理</h2>
                   <p className="mt-1 text-sm text-slate-500">
-                    管理员可治理买家、卖家与监管员；监管员仅可治理买家和卖家。
+                    监督方可查看全部用户，并治理买家、卖家账号；同角色账号不支持互相治理。
                   </p>
                 </div>
               </div>
 
-              <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-5">
                 <input
                   value={userFilters.q}
                   onChange={(event) => handleUserFilterChange("q", event.target.value)}
@@ -1226,6 +1564,17 @@ export default function Home() {
                   className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
                 >
                   {USER_STATUS_OPTIONS.map((option) => (
+                    <option key={option.value || "all"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={userFilters.walletBound}
+                  onChange={(event) => handleUserFilterChange("walletBound", event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                >
+                  {WALLET_BOUND_OPTIONS.map((option) => (
                     <option key={option.value || "all"} value={option.value}>
                       {option.label}
                     </option>
@@ -1267,9 +1616,25 @@ export default function Home() {
                           <div className="text-base font-semibold text-slate-900">
                             {user.username} #{user.id}
                           </div>
-                          <div>角色：{USER_ROLE_OPTIONS.find((option) => option.value === user.role)?.label || user.role}</div>
+                          <div>角色：{getUserRoleLabel(user.role)}</div>
                           <div>状态：{USER_STATUS_OPTIONS.find((option) => option.value === String(user.status))?.label || user.status}</div>
-                          <div>钱包：{user.ethAddress || "未分配"}</div>
+                          <div className="break-all">
+                            真实钱包：
+                            {user.walletBound && user.ethAddress ? (
+                              <span className="inline-flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-slate-900">{user.ethAddress}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyWalletAddress(user.ethAddress)}
+                                  className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                                >
+                                  复制
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="text-slate-500">未绑定</span>
+                            )}
+                          </div>
                           {user.frozenReason && <div>冻结原因：{user.frozenReason}</div>}
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -1321,6 +1686,12 @@ export default function Home() {
         )}
 
         <section id="regulator-section-market" className="scroll-mt-6 rounded-3xl bg-white p-6 shadow">
+          {currentUser?.role === "buyer" && (
+            <div className="mb-6">
+              <SellerWalletBinder accountRole="buyer" onWalletBound={handleWalletBound} />
+            </div>
+          )}
+
           <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
             <div>
               <h2 className="text-xl font-bold text-slate-900">市场商品</h2>
@@ -1613,7 +1984,8 @@ export default function Home() {
 
             <div className="p-5">
               <div className="text-sm text-slate-600">
-                将购买该商品，购买成功后可在订单中心查看订单状态。
+                将通过 MetaMask 向托管合约支付商品价格，确认收货前资金会锁定在链上。
+                若浏览器未检测到 MetaMask，则使用后端托管交易演示入口。
               </div>
               <div className="mt-5 flex justify-end gap-3">
                 <button

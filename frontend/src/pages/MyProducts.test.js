@@ -29,6 +29,7 @@ jest.mock("../services/file.service", () => ({
 
 jest.mock("../services/auth.service", () => ({
   getCurrentUser: jest.fn(),
+  bindSellerWallet: jest.fn(),
 }));
 
 beforeEach(() => {
@@ -39,6 +40,8 @@ beforeEach(() => {
     role: "seller",
     reputationScore: 60,
     isBlacklisted: false,
+    ethAddress: "0x0000000000000000000000000000000000000007",
+    walletBound: true,
   });
   ProductService.getMyProducts.mockResolvedValue({
     data: [

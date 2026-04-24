@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import ProductService from "../services/product.service";
 import AuthService from "../services/auth.service";
 import FileService from "../services/file.service";
+import SellerWalletBinder from "../components/SellerWalletBinder";
 
 const CATEGORY_OPTIONS = [
   { value: "mobile_phone", label: "手机" },
@@ -88,6 +89,15 @@ function statusClass(product) {
   return "bg-emerald-100 text-emerald-700";
 }
 
+async function requestCurrentWalletAccount() {
+  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  const account = accounts?.[0];
+  if (!account) {
+    throw new Error("未选择 MetaMask 账户");
+  }
+  return account;
+}
+
 export default function MyProducts() {
   const [products, setProducts] = useState([]);
   const [sellerInfo, setSellerInfo] = useState({ score: 60, isBlacklisted: false });
@@ -101,6 +111,10 @@ export default function MyProducts() {
     qualificationFile: null,
   });
   const [showAdvancedHashes, setShowAdvancedHashes] = useState(false);
+  const initialUser = AuthService.getCurrentUser();
+  const [sellerWallet, setSellerWallet] = useState(
+    initialUser?.walletBound ? initialUser.ethAddress || "" : ""
+  );
 
   const navigate = useNavigate();
 
@@ -221,6 +235,15 @@ export default function MyProducts() {
 
     setLoading(true);
     try {
+      let latestSellerWallet = sellerWallet;
+      if (window.ethereum) {
+        latestSellerWallet = await requestCurrentWalletAccount();
+      }
+
+      if (!latestSellerWallet) {
+        throw new Error("请先绑定商家 MetaMask 钱包。");
+      }
+
       let nextIpfsHash = resubmitForm.ipfsHash;
       let nextQualificationHash = resubmitForm.qualificationHash;
 
@@ -241,6 +264,7 @@ export default function MyProducts() {
         ...resubmitForm,
         ipfsHash: nextIpfsHash,
         qualificationHash: nextQualificationHash,
+        sellerWallet: latestSellerWallet,
       };
 
       const response = await ProductService.resubmitProduct(payload);
@@ -262,6 +286,9 @@ export default function MyProducts() {
   return (
     <div className="min-h-screen bg-gray-50 p-8">
       <div className="mx-auto max-w-7xl">
+        <div className="mb-6">
+          <SellerWalletBinder accountRole="seller" onWalletBound={setSellerWallet} />
+        </div>
         <div className="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2">
           <div
             className={`flex items-center justify-between rounded-lg p-6 text-white shadow-lg ${
@@ -275,7 +302,7 @@ export default function MyProducts() {
                 {sellerInfo.isBlacklisted ? "账号受限" : "账号正常"}
               </div>
             </div>
-            <div className="text-6xl opacity-20">R</div>
+            <div className="text-6xl opacity-20">信</div>
           </div>
 
           <div className="flex flex-col justify-center rounded-lg border border-gray-100 bg-white p-6 shadow">
