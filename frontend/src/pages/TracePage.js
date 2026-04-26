@@ -201,11 +201,46 @@ function StatusBadge({ active, label }) {
   );
 }
 
+function isHashLikeValue(value) {
+  const text = String(value || "");
+  return text.length >= 24 && (/^0x[a-fA-F0-9]+$/.test(text) || /^Qm[a-zA-Z0-9]+$/.test(text));
+}
+
 function InfoRow({ label, value }) {
+  const displayValue = value || "未提供";
+  const hashLike = isHashLikeValue(displayValue);
+
   return (
-    <div className="flex justify-between gap-4">
+    <div className="grid min-w-0 gap-1 sm:grid-cols-[8rem_minmax(0,1fr)]">
       <span className="text-slate-500">{label}</span>
-      <span className="text-right font-semibold text-slate-900">{value || "未提供"}</span>
+      <span
+        className={`min-w-0 text-left font-semibold text-slate-900 sm:text-right ${
+          hashLike ? "break-all font-mono text-xs leading-relaxed" : "break-words"
+        }`}
+      >
+        {displayValue}
+      </span>
+    </div>
+  );
+}
+
+function EvidenceHashCard({ label, hash, tone }) {
+  const toneClass =
+    tone === "green"
+      ? "bg-green-50 text-green-700 hover:bg-green-100"
+      : "bg-blue-50 text-blue-700 hover:bg-blue-100";
+
+  return (
+    <div className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white p-3">
+      <a
+        href={`${IPFS_GATEWAY}${hash}`}
+        target="_blank"
+        rel="noreferrer"
+        className={`inline-flex rounded-lg px-4 py-2 ${toneClass}`}
+      >
+        {label}
+      </a>
+      <div className="mt-3 break-all font-mono text-xs leading-relaxed text-slate-600">{hash}</div>
     </div>
   );
 }
@@ -323,7 +358,7 @@ export default function TracePage() {
 
   return (
     <div className="min-h-screen bg-slate-100 px-4 py-10">
-      <div className="mx-auto max-w-6xl space-y-6">
+      <div className="mx-auto max-w-7xl space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold text-slate-900">电子设备追溯报告</h1>
@@ -405,7 +440,7 @@ export default function TracePage() {
                 </div>
               </div>
 
-              <div className={`grid gap-6 p-8 ${canViewRegulatoryDetail ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
+              <div className={`grid gap-6 p-8 ${canViewRegulatoryDetail ? "lg:grid-cols-2 xl:grid-cols-4" : "lg:grid-cols-2"}`}>
                 <section className="space-y-4">
                   <div className="text-sm font-semibold uppercase tracking-wide text-slate-500">设备身份</div>
                   <div className="space-y-4 rounded-2xl bg-slate-50 p-5">
@@ -481,7 +516,7 @@ export default function TracePage() {
                 </section>
 
                 {canViewRegulatoryDetail && (
-                  <section className="space-y-4">
+                  <section className="space-y-4 lg:col-span-2 xl:col-span-2">
                     <div className="text-sm font-semibold uppercase tracking-wide text-slate-500">
                       监督与链上状态
                     </div>
@@ -551,28 +586,18 @@ export default function TracePage() {
               <div className={`grid gap-6 px-8 pb-8 ${canViewSellerOperations ? "lg:grid-cols-2" : "lg:grid-cols-1"}`}>
                 <div className="rounded-2xl bg-slate-50 p-5">
                   <div className="mb-3 text-sm font-semibold text-slate-600">IPFS 证据材料</div>
-                  <div className="flex flex-wrap gap-3">
+                  <div className="grid min-w-0 gap-3 md:grid-cols-2">
                     {traceData.ipfsHash && traceData.ipfsHash !== "NoReport" && (
-                      <a
-                        href={`${IPFS_GATEWAY}${traceData.ipfsHash}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-lg bg-blue-50 px-4 py-2 text-blue-700 hover:bg-blue-100"
-                      >
-                        检测报告
-                      </a>
+                      <EvidenceHashCard label="检测报告" hash={traceData.ipfsHash} tone="blue" />
                     )}
                     {canViewComplianceDetail &&
                       traceData.qualificationHash &&
                       traceData.qualificationHash !== "NoCert" && (
-                        <a
-                          href={`${IPFS_GATEWAY}${traceData.qualificationHash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="rounded-lg bg-green-50 px-4 py-2 text-green-700 hover:bg-green-100"
-                        >
-                          资质证书
-                        </a>
+                        <EvidenceHashCard
+                          label="资质证书"
+                          hash={traceData.qualificationHash}
+                          tone="green"
+                        />
                       )}
                     {!traceData.ipfsHash && !traceData.qualificationHash && (
                       <span className="text-slate-500">暂无可用证据文件</span>
