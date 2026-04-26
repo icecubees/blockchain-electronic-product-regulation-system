@@ -6,6 +6,14 @@ To regenerate a larger dataset, run:
 
 `./venv/Scripts/python.exe generate_dataset.py --rows 2400`
 
+To add real-world high-risk recall rows from the CPSC Recall Data API:
+
+`./venv/Scripts/python.exe cpsc_recall_importer.py --max-rows 240`
+
+Then regenerate the training dataset with those normalized CPSC `FAIL` rows appended:
+
+`./venv/Scripts/python.exe generate_dataset.py --rows 2400 --include-real-fail --max-real-fail-rows 160`
+
 The generator now injects:
 
 - label-balanced category coverage
@@ -13,6 +21,7 @@ The generator now injects:
 - short or noisy report text
 - OCR-style formatting noise
 - minor text/field contradictions for robustness
+- optional real CPSC recall text, hazard, incident, remedy, and source URL signals
 
 To generate a harder independent holdout set, run:
 

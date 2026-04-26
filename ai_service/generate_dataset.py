@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 OUTPUT_PATH = Path(__file__).resolve().parent / "data" / "electronic_audit_dataset.csv"
+DEFAULT_REAL_FAIL_INPUT = Path(__file__).resolve().parent / "data" / "cpsc_recall_fail_samples.csv"
 DEFAULT_TOTAL = 2400
 SEED = 20260415
 
@@ -21,6 +22,36 @@ CATEGORIES = [
     "camera",
     "router",
     "accessory",
+]
+
+FIELDNAMES = [
+    "sample_id",
+    "split",
+    "category",
+    "name",
+    "description",
+    "brand",
+    "model",
+    "serial_number",
+    "batch_no",
+    "is_used",
+    "is_refurbished",
+    "battery_health",
+    "accessory_status",
+    "ccc_number",
+    "energy_level",
+    "rohs_status",
+    "inspection_agency",
+    "inspection_conclusion",
+    "battery_safety_passed",
+    "charger_safety_passed",
+    "appearance_grade",
+    "functional_test_passed",
+    "repair_history_declared",
+    "report_text",
+    "risk_level",
+    "audit_label",
+    "reason_codes",
 ]
 
 CATEGORY_CONFIG = {
@@ -493,40 +524,43 @@ def generate_rows(total_rows: int, seed: int) -> list[dict[str, str]]:
     return rows
 
 
+def load_real_fail_rows(input_path: Path, max_rows: int, seed: int) -> list[dict[str, str]]:
+    if not input_path.exists():
+        raise FileNotFoundError(
+            f"Real FAIL input not found: {input_path}. Run cpsc_recall_importer.py first."
+        )
+
+    rows: list[dict[str, str]] = []
+    with input_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if str(row.get("audit_label", "")).strip().upper() != "FAIL":
+                continue
+            category = str(row.get("category", "")).strip()
+            if category not in CATEGORIES:
+                continue
+
+            normalized = {field: str(row.get(field, "") or "") for field in FIELDNAMES}
+            normalized["category"] = category
+            normalized["audit_label"] = "FAIL"
+            if normalized["split"] not in {"train", "val", "test"}:
+                normalized["split"] = determine_split(len(rows), max_rows or 1)
+            if not normalized["sample_id"]:
+                normalized["sample_id"] = f"REAL-FAIL-{len(rows) + 1:05d}"
+            rows.append(normalized)
+
+    rng = random.Random(seed)
+    rng.shuffle(rows)
+    if max_rows > 0:
+        return rows[:max_rows]
+    return rows
+
+
 def write_csv(rows: list[dict[str, str]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "sample_id",
-        "split",
-        "category",
-        "name",
-        "description",
-        "brand",
-        "model",
-        "serial_number",
-        "batch_no",
-        "is_used",
-        "is_refurbished",
-        "battery_health",
-        "accessory_status",
-        "ccc_number",
-        "energy_level",
-        "rohs_status",
-        "inspection_agency",
-        "inspection_conclusion",
-        "battery_safety_passed",
-        "charger_safety_passed",
-        "appearance_grade",
-        "functional_test_passed",
-        "repair_history_declared",
-        "report_text",
-        "risk_level",
-        "audit_label",
-        "reason_codes",
-    ]
 
     with output_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -536,12 +570,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rows", type=int, default=DEFAULT_TOTAL, help="Total rows to generate")
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
     parser.add_argument("--output", default=str(OUTPUT_PATH), help="Output CSV path")
+    parser.add_argument(
+        "--include-real-fail",
+        action="store_true",
+        help="Append normalized real-world FAIL recall samples to the generated dataset",
+    )
+    parser.add_argument(
+        "--real-fail-input",
+        default=str(DEFAULT_REAL_FAIL_INPUT),
+        help="Path to normalized real-world FAIL samples",
+    )
+    parser.add_argument(
+        "--max-real-fail-rows",
+        type=int,
+        default=160,
+        help="Maximum real-world FAIL rows to append; 0 means all rows",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     rows = generate_rows(args.rows, args.seed)
+    if args.include_real_fail:
+        real_fail_rows = load_real_fail_rows(
+            Path(args.real_fail_input),
+            args.max_real_fail_rows,
+            args.seed,
+        )
+        rows.extend(real_fail_rows)
+        print(f"Included {len(real_fail_rows)} real-world FAIL rows from {args.real_fail_input}")
     write_csv(rows, Path(args.output))
     print(f"Generated {len(rows)} rows -> {args.output}")
 

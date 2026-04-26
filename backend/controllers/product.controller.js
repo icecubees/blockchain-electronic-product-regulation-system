@@ -1792,21 +1792,31 @@ exports.auditProduct = async (req, res) => {
         missingItems: missingReviewItems,
       });
     }
-    const aiAssessment =
-      requestedDecision === 0
-        ? {
-            label: "FAIL",
-            result: "FAIL",
-            confidence: 0,
-            passProbability: 0,
-            reasonHints: [],
-            modelVersion: null,
-            shouldBlock: true,
-            requiresManualReview: false,
-            isApprovedLike: false,
-          }
-        : await callAiAuditService(product.description || "", null, product);
-    const aiOraclePass = requestedDecision === 1 && aiAssessment.isApprovedLike;
+    const aiAuditEnabled = await settingService.isAiAuditEnabled();
+    let aiAssessment;
+    if (requestedDecision === 0) {
+      aiAssessment = {
+        label: "FAIL",
+        result: "FAIL",
+        confidence: 0,
+        passProbability: 0,
+        reasonHints: [],
+        modelVersion: null,
+        shouldBlock: true,
+        requiresManualReview: false,
+        isApprovedLike: false,
+        manualDecisionOnly: true,
+      };
+    } else if (aiAuditEnabled) {
+      aiAssessment = await callAiAuditService(product.description || "", null, product);
+    } else {
+      aiAssessment = buildAiDisabledAssessment();
+    }
+    const aiOraclePass = requestedDecision === 1;
+    const humanOverrideAi =
+      requestedDecision === 1 &&
+      aiAuditEnabled &&
+      !aiAssessment.isApprovedLike;
 
     const chainId = product.onChainId > 0 ? product.onChainId : product.id;
     const { signature, oracleAddress } = signAiAuditResult(chainId, aiOraclePass);
@@ -1848,16 +1858,22 @@ exports.auditProduct = async (req, res) => {
         aiPassProbability: aiAssessment.passProbability,
         aiReasonHints: aiAssessment.reasonHints,
         aiModelVersion: aiAssessment.modelVersion,
+        aiAuditEnabled,
+        humanDecision: requestedDecision === 1 ? "approve" : "reject",
+        humanOverrideAi,
       },
       req,
       txHash: receipt.transactionHash,
     });
 
     res.send({
-      message: "Audit completed with AI oracle signature.",
+      message: humanOverrideAi
+        ? "Audit completed by manual decision; AI result was recorded as advisory evidence."
+        : "Audit completed with manual decision signature.",
       auditStatus: product.auditStatus,
       aiOracleSigner: oracleAddress,
       aiAssessment,
+      humanOverrideAi,
       reasonCodes,
     });
   } catch (error) {
