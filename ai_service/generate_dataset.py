@@ -8,7 +8,9 @@ from pathlib import Path
 
 OUTPUT_PATH = Path(__file__).resolve().parent / "data" / "electronic_audit_dataset.csv"
 DEFAULT_REAL_FAIL_INPUT = Path(__file__).resolve().parent / "data" / "cpsc_recall_fail_samples.csv"
-DEFAULT_TOTAL = 2400
+DEFAULT_TOTAL = 3200
+DEFAULT_REAL_NAME_RATE = 0.70
+DEFAULT_MAX_REAL_FAIL_ROWS = 240
 SEED = 20260415
 
 CATEGORIES = [
@@ -127,6 +129,817 @@ CATEGORY_CONFIG = {
     },
 }
 
+REAL_PRODUCT_PROFILES = {
+    "mobile_phone": [
+        {
+            "brand": "Apple",
+            "model": "iPhone 13",
+            "name": "Apple iPhone 13 手机",
+            "description": "A15 芯片 5G 智能手机",
+        },
+        {
+            "brand": "Samsung",
+            "model": "Galaxy S23",
+            "name": "Samsung Galaxy S23 智能手机",
+            "description": "骁龙平台 影像旗舰 5G 手机",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "Redmi Note 12 5G",
+            "name": "Xiaomi Redmi Note 12 5G 手机",
+            "description": "OLED 屏幕 长续航 5G 手机",
+        },
+        {
+            "brand": "Huawei",
+            "model": "Mate 50",
+            "name": "Huawei Mate 50 智能手机",
+            "description": "影像旗舰 北斗消息 智能手机",
+        },
+        {
+            "brand": "OPPO",
+            "model": "Reno10",
+            "name": "OPPO Reno10 手机",
+            "description": "轻薄人像拍摄 5G 智能手机",
+        },
+        {
+            "brand": "vivo",
+            "model": "X90",
+            "name": "vivo X90 手机",
+            "description": "影像芯片 高刷屏 智能手机",
+        },
+    ],
+    "laptop": [
+        {
+            "brand": "Apple",
+            "model": "MacBook Air 13 M2",
+            "name": "Apple MacBook Air 13 M2 笔记本",
+            "description": "轻薄办公 13 英寸笔记本电脑",
+        },
+        {
+            "brand": "Lenovo",
+            "model": "ThinkPad X1 Carbon Gen 10",
+            "name": "Lenovo ThinkPad X1 Carbon Gen 10 笔记本",
+            "description": "商务轻薄 碳纤维机身 笔记本电脑",
+        },
+        {
+            "brand": "Dell",
+            "model": "XPS 13 9315",
+            "name": "Dell XPS 13 9315 笔记本",
+            "description": "轻薄办公 高分辨率屏幕 笔记本电脑",
+        },
+        {
+            "brand": "HP",
+            "model": "Spectre x360 14",
+            "name": "HP Spectre x360 14 笔记本",
+            "description": "翻转触控 商务办公 笔记本电脑",
+        },
+        {
+            "brand": "ASUS",
+            "model": "ROG Zephyrus G14",
+            "name": "ASUS ROG Zephyrus G14 笔记本",
+            "description": "游戏性能 独立显卡 笔记本电脑",
+        },
+    ],
+    "tablet": [
+        {
+            "brand": "Apple",
+            "model": "iPad 10th Gen",
+            "name": "Apple iPad 第十代 平板电脑",
+            "description": "10.9 英寸学习办公平板电脑",
+        },
+        {
+            "brand": "Samsung",
+            "model": "Galaxy Tab S9",
+            "name": "Samsung Galaxy Tab S9 平板电脑",
+            "description": "AMOLED 屏幕 防水平板电脑",
+        },
+        {
+            "brand": "Huawei",
+            "model": "MatePad 11.5",
+            "name": "Huawei MatePad 11.5 平板电脑",
+            "description": "学习办公 护眼屏 平板电脑",
+        },
+        {
+            "brand": "Lenovo",
+            "model": "Xiaoxin Pad Pro 12.7",
+            "name": "Lenovo 小新 Pad Pro 12.7 平板电脑",
+            "description": "大屏娱乐 学习办公平板电脑",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "Pad 6",
+            "name": "Xiaomi Pad 6 平板电脑",
+            "description": "高刷屏 骁龙平台 平板电脑",
+        },
+    ],
+    "earphone": [
+        {
+            "brand": "Apple",
+            "model": "AirPods Pro 2",
+            "name": "Apple AirPods Pro 2 无线耳机",
+            "description": "主动降噪 真无线蓝牙耳机",
+        },
+        {
+            "brand": "Sony",
+            "model": "WF-1000XM5",
+            "name": "Sony WF-1000XM5 真无线耳机",
+            "description": "主动降噪 高解析音频蓝牙耳机",
+        },
+        {
+            "brand": "Bose",
+            "model": "QuietComfort Earbuds II",
+            "name": "Bose QuietComfort Earbuds II 耳机",
+            "description": "降噪通话 真无线蓝牙耳机",
+        },
+        {
+            "brand": "Huawei",
+            "model": "FreeBuds Pro 3",
+            "name": "Huawei FreeBuds Pro 3 无线耳机",
+            "description": "智慧降噪 双设备连接蓝牙耳机",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "Redmi Buds 5 Pro",
+            "name": "Xiaomi Redmi Buds 5 Pro 耳机",
+            "description": "主动降噪 长续航蓝牙耳机",
+        },
+    ],
+    "charger": [
+        {
+            "brand": "Apple",
+            "model": "20W USB-C Power Adapter",
+            "name": "Apple 20W USB-C 电源适配器",
+            "description": "USB-C 快充电源适配器",
+        },
+        {
+            "brand": "Anker",
+            "model": "511 Charger 30W",
+            "name": "Anker 511 Charger 30W 充电器",
+            "description": "GaN 氮化镓 USB-C 快充充电器",
+        },
+        {
+            "brand": "UGREEN",
+            "model": "Nexode 65W",
+            "name": "UGREEN Nexode 65W 氮化镓充电器",
+            "description": "多口 USB-C 氮化镓快充充电器",
+        },
+        {
+            "brand": "Baseus",
+            "model": "GaN5 Pro 65W",
+            "name": "Baseus GaN5 Pro 65W 充电器",
+            "description": "三口氮化镓快充充电器",
+        },
+        {
+            "brand": "Samsung",
+            "model": "EP-TA800",
+            "name": "Samsung EP-TA800 25W 充电器",
+            "description": "USB-C 快速充电旅行适配器",
+        },
+    ],
+    "power_bank": [
+        {
+            "brand": "Anker",
+            "model": "PowerCore 10000",
+            "name": "Anker PowerCore 10000 移动电源",
+            "description": "10000mAh 便携移动电源",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "Mi Power Bank 3 20000mAh",
+            "name": "Xiaomi 移动电源 3 20000mAh",
+            "description": "双向快充 大容量移动电源",
+        },
+        {
+            "brand": "Baseus",
+            "model": "Adaman 20000mAh 65W",
+            "name": "Baseus Adaman 20000mAh 65W 移动电源",
+            "description": "金属外壳 大功率快充移动电源",
+        },
+        {
+            "brand": "UGREEN",
+            "model": "145W Power Bank 25000mAh",
+            "name": "UGREEN 145W 25000mAh 移动电源",
+            "description": "多口大功率移动电源",
+        },
+    ],
+    "smart_watch": [
+        {
+            "brand": "Apple",
+            "model": "Watch Series 8",
+            "name": "Apple Watch Series 8 智能手表",
+            "description": "健康监测 GPS 智能手表",
+        },
+        {
+            "brand": "Huawei",
+            "model": "Watch GT 4",
+            "name": "Huawei Watch GT 4 智能手表",
+            "description": "运动健康监测 长续航智能手表",
+        },
+        {
+            "brand": "Samsung",
+            "model": "Galaxy Watch6",
+            "name": "Samsung Galaxy Watch6 智能手表",
+            "description": "健康追踪 蓝牙智能手表",
+        },
+        {
+            "brand": "Garmin",
+            "model": "Forerunner 265",
+            "name": "Garmin Forerunner 265 运动手表",
+            "description": "GPS 跑步训练运动手表",
+        },
+    ],
+    "camera": [
+        {
+            "brand": "Canon",
+            "model": "EOS R50",
+            "name": "Canon EOS R50 微单相机",
+            "description": "APS-C 画幅微单套机",
+        },
+        {
+            "brand": "Sony",
+            "model": "ZV-E10",
+            "name": "Sony ZV-E10 微单相机",
+            "description": "Vlog 视频拍摄微单相机",
+        },
+        {
+            "brand": "Nikon",
+            "model": "Z fc",
+            "name": "Nikon Z fc 微单相机",
+            "description": "复古外观 无反微单相机",
+        },
+        {
+            "brand": "Fujifilm",
+            "model": "X-S10",
+            "name": "Fujifilm X-S10 微单相机",
+            "description": "五轴防抖 便携微单相机",
+        },
+    ],
+    "router": [
+        {
+            "brand": "TP-Link",
+            "model": "Archer AX55",
+            "name": "TP-Link Archer AX55 Wi-Fi 6 路由器",
+            "description": "AX3000 双频 Wi-Fi 6 路由器",
+        },
+        {
+            "brand": "ASUS",
+            "model": "RT-AX86U",
+            "name": "ASUS RT-AX86U Wi-Fi 6 路由器",
+            "description": "电竞网络 双频 Wi-Fi 6 路由器",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "AX3000",
+            "name": "Xiaomi AX3000 路由器",
+            "description": "Mesh 组网 Wi-Fi 6 路由器",
+        },
+        {
+            "brand": "Huawei",
+            "model": "AX3 Pro",
+            "name": "Huawei AX3 Pro 路由器",
+            "description": "双频 Wi-Fi 6 家用路由器",
+        },
+    ],
+    "accessory": [
+        {
+            "brand": "Apple",
+            "model": "USB-C to Lightning Cable",
+            "name": "Apple USB-C 转 Lightning 连接线",
+            "description": "原装数据线 充电与数据传输配件",
+        },
+        {
+            "brand": "UGREEN",
+            "model": "USB-C Hub 6-in-1",
+            "name": "UGREEN USB-C 六合一扩展坞",
+            "description": "HDMI USB 读卡器多功能扩展坞",
+        },
+        {
+            "brand": "Logitech",
+            "model": "MX Master 3S",
+            "name": "Logitech MX Master 3S 无线鼠标",
+            "description": "蓝牙办公无线鼠标",
+        },
+        {
+            "brand": "Samsung",
+            "model": "T7 Shield 1TB",
+            "name": "Samsung T7 Shield 1TB 移动固态硬盘",
+            "description": "便携 USB-C 移动固态硬盘",
+        },
+    ],
+}
+
+ADDITIONAL_REAL_PRODUCT_PROFILES = {
+    "mobile_phone": [
+        {
+            "brand": "Apple",
+            "model": "iPhone 14",
+            "name": "Apple iPhone 14 手机",
+            "description": "A15 芯片 5G 智能手机",
+        },
+        {
+            "brand": "Apple",
+            "model": "iPhone 15",
+            "name": "Apple iPhone 15 手机",
+            "description": "灵动岛 USB-C 接口 5G 智能手机",
+        },
+        {
+            "brand": "Samsung",
+            "model": "Galaxy A54 5G",
+            "name": "Samsung Galaxy A54 5G 智能手机",
+            "description": "AMOLED 屏幕 防水 5G 手机",
+        },
+        {
+            "brand": "Google",
+            "model": "Pixel 7",
+            "name": "Google Pixel 7 智能手机",
+            "description": "Tensor 芯片 影像增强 5G 手机",
+        },
+        {
+            "brand": "OnePlus",
+            "model": "OnePlus 11",
+            "name": "OnePlus 11 手机",
+            "description": "骁龙平台 哈苏影像 5G 手机",
+        },
+        {
+            "brand": "HONOR",
+            "model": "Magic5 Pro",
+            "name": "HONOR Magic5 Pro 智能手机",
+            "description": "旗舰影像 高刷屏 5G 手机",
+        },
+        {
+            "brand": "Motorola",
+            "model": "Edge 40 Pro",
+            "name": "Motorola Edge 40 Pro 手机",
+            "description": "高刷新率屏幕 快充 5G 手机",
+        },
+        {
+            "brand": "Nothing",
+            "model": "Phone 2",
+            "name": "Nothing Phone 2 智能手机",
+            "description": "透明背板 Glyph 灯效 5G 手机",
+        },
+    ],
+    "laptop": [
+        {
+            "brand": "Apple",
+            "model": "MacBook Pro 14 M2 Pro",
+            "name": "Apple MacBook Pro 14 M2 Pro 笔记本",
+            "description": "Liquid Retina XDR 屏幕 专业笔记本电脑",
+        },
+        {
+            "brand": "Lenovo",
+            "model": "Yoga Pro 14s",
+            "name": "Lenovo Yoga Pro 14s 笔记本",
+            "description": "高分辨率屏幕 轻薄办公笔记本电脑",
+        },
+        {
+            "brand": "Lenovo",
+            "model": "Legion 5 Pro 16",
+            "name": "Lenovo Legion 5 Pro 16 游戏笔记本",
+            "description": "高刷新率屏幕 独立显卡游戏笔记本",
+        },
+        {
+            "brand": "Dell",
+            "model": "Inspiron 14 5430",
+            "name": "Dell Inspiron 14 5430 笔记本",
+            "description": "14 英寸日常办公笔记本电脑",
+        },
+        {
+            "brand": "HP",
+            "model": "Pavilion Plus 14",
+            "name": "HP Pavilion Plus 14 笔记本",
+            "description": "OLED 屏幕 轻薄创作笔记本电脑",
+        },
+        {
+            "brand": "Acer",
+            "model": "Swift Go 14",
+            "name": "Acer Swift Go 14 笔记本",
+            "description": "轻薄便携 OLED 屏幕笔记本电脑",
+        },
+        {
+            "brand": "Microsoft",
+            "model": "Surface Laptop 5",
+            "name": "Microsoft Surface Laptop 5 笔记本",
+            "description": "触控屏 商务办公笔记本电脑",
+        },
+        {
+            "brand": "Huawei",
+            "model": "MateBook 14",
+            "name": "Huawei MateBook 14 笔记本",
+            "description": "2K 触控屏 轻薄办公笔记本电脑",
+        },
+    ],
+    "tablet": [
+        {
+            "brand": "Apple",
+            "model": "iPad Air 5",
+            "name": "Apple iPad Air 第五代 平板电脑",
+            "description": "M1 芯片 10.9 英寸平板电脑",
+        },
+        {
+            "brand": "Apple",
+            "model": "iPad Pro 11 M2",
+            "name": "Apple iPad Pro 11 M2 平板电脑",
+            "description": "ProMotion 屏幕 专业平板电脑",
+        },
+        {
+            "brand": "Samsung",
+            "model": "Galaxy Tab A8",
+            "name": "Samsung Galaxy Tab A8 平板电脑",
+            "description": "10.5 英寸娱乐学习平板电脑",
+        },
+        {
+            "brand": "Microsoft",
+            "model": "Surface Pro 9",
+            "name": "Microsoft Surface Pro 9 二合一平板",
+            "description": "触控键盘 二合一平板电脑",
+        },
+        {
+            "brand": "Amazon",
+            "model": "Fire HD 10",
+            "name": "Amazon Fire HD 10 平板电脑",
+            "description": "10.1 英寸娱乐平板电脑",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "Redmi Pad SE",
+            "name": "Xiaomi Redmi Pad SE 平板电脑",
+            "description": "11 英寸护眼屏 娱乐平板电脑",
+        },
+        {
+            "brand": "Lenovo",
+            "model": "Tab P12",
+            "name": "Lenovo Tab P12 平板电脑",
+            "description": "12.7 英寸学习娱乐平板电脑",
+        },
+    ],
+    "earphone": [
+        {
+            "brand": "Sony",
+            "model": "WH-1000XM5",
+            "name": "Sony WH-1000XM5 头戴式耳机",
+            "description": "主动降噪 蓝牙头戴式耳机",
+        },
+        {
+            "brand": "Beats",
+            "model": "Studio Buds",
+            "name": "Beats Studio Buds 真无线耳机",
+            "description": "主动降噪 真无线蓝牙耳机",
+        },
+        {
+            "brand": "Jabra",
+            "model": "Elite 7 Pro",
+            "name": "Jabra Elite 7 Pro 真无线耳机",
+            "description": "通话降噪 真无线蓝牙耳机",
+        },
+        {
+            "brand": "Samsung",
+            "model": "Galaxy Buds2 Pro",
+            "name": "Samsung Galaxy Buds2 Pro 无线耳机",
+            "description": "主动降噪 高解析音频蓝牙耳机",
+        },
+        {
+            "brand": "Nothing",
+            "model": "Ear 2",
+            "name": "Nothing Ear 2 真无线耳机",
+            "description": "透明外观 主动降噪蓝牙耳机",
+        },
+        {
+            "brand": "JBL",
+            "model": "Tune 230NC TWS",
+            "name": "JBL Tune 230NC TWS 耳机",
+            "description": "主动降噪 真无线蓝牙耳机",
+        },
+        {
+            "brand": "Anker",
+            "model": "Soundcore Liberty 4",
+            "name": "Anker Soundcore Liberty 4 无线耳机",
+            "description": "空间音频 心率监测真无线耳机",
+        },
+        {
+            "brand": "Shokz",
+            "model": "OpenRun",
+            "name": "Shokz OpenRun 骨传导耳机",
+            "description": "运动防水 骨传导蓝牙耳机",
+        },
+    ],
+    "charger": [
+        {
+            "brand": "Anker",
+            "model": "737 Charger 120W",
+            "name": "Anker 737 Charger 120W 充电器",
+            "description": "GaNPrime 三口 USB-C 快充充电器",
+        },
+        {
+            "brand": "Belkin",
+            "model": "BoostCharge Pro 65W",
+            "name": "Belkin BoostCharge Pro 65W 充电器",
+            "description": "双 USB-C 氮化镓快充充电器",
+        },
+        {
+            "brand": "Apple",
+            "model": "MagSafe Charger",
+            "name": "Apple MagSafe 磁吸充电器",
+            "description": "无线磁吸充电器",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "67W GaN Charger",
+            "name": "Xiaomi 67W 氮化镓充电器",
+            "description": "USB-C 快充电源适配器",
+        },
+        {
+            "brand": "Huawei",
+            "model": "SuperCharge 66W",
+            "name": "Huawei SuperCharge 66W 充电器",
+            "description": "超级快充电源适配器",
+        },
+        {
+            "brand": "Google",
+            "model": "30W USB-C Charger",
+            "name": "Google 30W USB-C 充电器",
+            "description": "USB-C 快充电源适配器",
+        },
+        {
+            "brand": "Dell",
+            "model": "65W USB-C AC Adapter",
+            "name": "Dell 65W USB-C 电源适配器",
+            "description": "笔记本电脑 USB-C 电源适配器",
+        },
+        {
+            "brand": "Lenovo",
+            "model": "65W USB-C AC Adapter",
+            "name": "Lenovo 65W USB-C 电源适配器",
+            "description": "ThinkPad USB-C 旅行电源适配器",
+        },
+    ],
+    "power_bank": [
+        {
+            "brand": "Anker",
+            "model": "737 Power Bank",
+            "name": "Anker 737 Power Bank 移动电源",
+            "description": "PowerCore 24000mAh 大功率移动电源",
+        },
+        {
+            "brand": "Belkin",
+            "model": "BoostCharge Power Bank 10K",
+            "name": "Belkin BoostCharge 10000mAh 移动电源",
+            "description": "USB-C PD 便携移动电源",
+        },
+        {
+            "brand": "Mophie",
+            "model": "Powerstation",
+            "name": "Mophie Powerstation 移动电源",
+            "description": "USB-C 便携移动电源",
+        },
+        {
+            "brand": "Zendure",
+            "model": "SuperTank Pro",
+            "name": "Zendure SuperTank Pro 移动电源",
+            "description": "100W PD 大容量移动电源",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "10000mAh Power Bank",
+            "name": "Xiaomi 10000mAh 移动电源",
+            "description": "便携双向快充移动电源",
+        },
+        {
+            "brand": "ROMOSS",
+            "model": "Sense 8P+",
+            "name": "ROMOSS Sense 8P+ 移动电源",
+            "description": "30000mAh 多口移动电源",
+        },
+        {
+            "brand": "Baseus",
+            "model": "Blade 100W Power Bank",
+            "name": "Baseus Blade 100W 移动电源",
+            "description": "轻薄大功率笔记本移动电源",
+        },
+        {
+            "brand": "UGREEN",
+            "model": "100W Power Bank 20000mAh",
+            "name": "UGREEN 100W 20000mAh 移动电源",
+            "description": "USB-C 大功率快充移动电源",
+        },
+    ],
+    "smart_watch": [
+        {
+            "brand": "Apple",
+            "model": "Watch Ultra 2",
+            "name": "Apple Watch Ultra 2 智能手表",
+            "description": "GPS 蜂窝网络户外智能手表",
+        },
+        {
+            "brand": "Apple",
+            "model": "Watch SE 2",
+            "name": "Apple Watch SE 第二代 智能手表",
+            "description": "健康追踪 GPS 智能手表",
+        },
+        {
+            "brand": "Samsung",
+            "model": "Galaxy Watch5 Pro",
+            "name": "Samsung Galaxy Watch5 Pro 智能手表",
+            "description": "蓝牙 GPS 健康监测智能手表",
+        },
+        {
+            "brand": "Fitbit",
+            "model": "Versa 4",
+            "name": "Fitbit Versa 4 智能手表",
+            "description": "运动健康追踪智能手表",
+        },
+        {
+            "brand": "Garmin",
+            "model": "Fenix 7",
+            "name": "Garmin Fenix 7 运动手表",
+            "description": "多频 GPS 户外运动手表",
+        },
+        {
+            "brand": "Xiaomi",
+            "model": "Watch S1",
+            "name": "Xiaomi Watch S1 智能手表",
+            "description": "蓝牙通话 健康监测智能手表",
+        },
+        {
+            "brand": "Amazfit",
+            "model": "GTR 4",
+            "name": "Amazfit GTR 4 智能手表",
+            "description": "运动健康管理智能手表",
+        },
+        {
+            "brand": "Huawei",
+            "model": "Watch Fit 2",
+            "name": "Huawei Watch Fit 2 智能手表",
+            "description": "轻量健康监测智能手表",
+        },
+    ],
+    "camera": [
+        {
+            "brand": "Sony",
+            "model": "Alpha 7 IV",
+            "name": "Sony Alpha 7 IV 全画幅微单相机",
+            "description": "全画幅混合型微单相机",
+        },
+        {
+            "brand": "Canon",
+            "model": "EOS R6 Mark II",
+            "name": "Canon EOS R6 Mark II 微单相机",
+            "description": "全画幅高速连拍微单相机",
+        },
+        {
+            "brand": "Nikon",
+            "model": "Z 30",
+            "name": "Nikon Z 30 微单相机",
+            "description": "Vlog 视频拍摄微单相机",
+        },
+        {
+            "brand": "Fujifilm",
+            "model": "X-T5",
+            "name": "Fujifilm X-T5 微单相机",
+            "description": "高像素复古机身微单相机",
+        },
+        {
+            "brand": "GoPro",
+            "model": "HERO11 Black",
+            "name": "GoPro HERO11 Black 运动相机",
+            "description": "防水防抖 5.3K 运动相机",
+        },
+        {
+            "brand": "DJI",
+            "model": "Osmo Action 4",
+            "name": "DJI Osmo Action 4 运动相机",
+            "description": "防水防抖 4K 运动相机",
+        },
+        {
+            "brand": "Insta360",
+            "model": "X3",
+            "name": "Insta360 X3 全景相机",
+            "description": "5.7K 防水全景运动相机",
+        },
+        {
+            "brand": "Panasonic",
+            "model": "Lumix GH6",
+            "name": "Panasonic Lumix GH6 微单相机",
+            "description": "视频创作 M4/3 微单相机",
+        },
+    ],
+    "router": [
+        {
+            "brand": "TP-Link",
+            "model": "Archer AX73",
+            "name": "TP-Link Archer AX73 Wi-Fi 6 路由器",
+            "description": "AX5400 双频 Wi-Fi 6 路由器",
+        },
+        {
+            "brand": "TP-Link",
+            "model": "Deco X60",
+            "name": "TP-Link Deco X60 Mesh 路由器",
+            "description": "AX3000 Wi-Fi 6 Mesh 路由器",
+        },
+        {
+            "brand": "ASUS",
+            "model": "RT-AX88U",
+            "name": "ASUS RT-AX88U Wi-Fi 6 路由器",
+            "description": "AX6000 双频电竞路由器",
+        },
+        {
+            "brand": "Netgear",
+            "model": "Nighthawk RAX50",
+            "name": "Netgear Nighthawk RAX50 路由器",
+            "description": "AX5400 Wi-Fi 6 家用路由器",
+        },
+        {
+            "brand": "Linksys",
+            "model": "Hydra Pro 6",
+            "name": "Linksys Hydra Pro 6 Wi-Fi 6 路由器",
+            "description": "Mesh Ready 双频 Wi-Fi 6 路由器",
+        },
+        {
+            "brand": "Eero",
+            "model": "Eero 6+",
+            "name": "Eero 6+ Mesh 路由器",
+            "description": "双频 Wi-Fi 6 Mesh 路由器",
+        },
+        {
+            "brand": "Google",
+            "model": "Nest Wifi Pro",
+            "name": "Google Nest Wifi Pro 路由器",
+            "description": "Wi-Fi 6E Mesh 路由器",
+        },
+        {
+            "brand": "Ubiquiti",
+            "model": "UniFi Dream Router",
+            "name": "Ubiquiti UniFi Dream Router",
+            "description": "一体化企业网络路由器",
+        },
+    ],
+    "accessory": [
+        {
+            "brand": "Apple",
+            "model": "Magic Keyboard",
+            "name": "Apple Magic Keyboard 键盘",
+            "description": "蓝牙无线妙控键盘",
+        },
+        {
+            "brand": "Apple",
+            "model": "Pencil 2nd Generation",
+            "name": "Apple Pencil 第二代 触控笔",
+            "description": "iPad 磁吸触控笔配件",
+        },
+        {
+            "brand": "Logitech",
+            "model": "K380",
+            "name": "Logitech K380 蓝牙键盘",
+            "description": "多设备蓝牙无线键盘",
+        },
+        {
+            "brand": "Logitech",
+            "model": "MX Keys Mini",
+            "name": "Logitech MX Keys Mini 无线键盘",
+            "description": "紧凑型蓝牙办公键盘",
+        },
+        {
+            "brand": "SanDisk",
+            "model": "Extreme Portable SSD",
+            "name": "SanDisk Extreme Portable SSD 移动固态硬盘",
+            "description": "USB-C 便携移动固态硬盘",
+        },
+        {
+            "brand": "WD",
+            "model": "My Passport SSD",
+            "name": "WD My Passport SSD 移动固态硬盘",
+            "description": "便携 USB-C 移动固态硬盘",
+        },
+        {
+            "brand": "UGREEN",
+            "model": "USB-C 9-in-1 Dock",
+            "name": "UGREEN USB-C 九合一扩展坞",
+            "description": "HDMI 网口读卡器多功能扩展坞",
+        },
+        {
+            "brand": "Anker",
+            "model": "555 USB-C Hub",
+            "name": "Anker 555 USB-C Hub 扩展坞",
+            "description": "8 合 1 USB-C 多功能扩展坞",
+        },
+        {
+            "brand": "Belkin",
+            "model": "USB-C to HDMI Adapter",
+            "name": "Belkin USB-C 转 HDMI 适配器",
+            "description": "USB-C 视频转接配件",
+        },
+        {
+            "brand": "Kingston",
+            "model": "DataTraveler Max",
+            "name": "Kingston DataTraveler Max U 盘",
+            "description": "USB-C 高速闪存盘",
+        },
+    ],
+}
+
+for category, profiles in ADDITIONAL_REAL_PRODUCT_PROFILES.items():
+    REAL_PRODUCT_PROFILES.setdefault(category, []).extend(profiles)
+
 INSPECTION_AGENCIES = [
     "深圳质检中心",
     "广州电子检验所",
@@ -236,18 +1049,46 @@ def build_serial(category: str, index: int) -> str:
     return f"{prefix}-{index:06d}"
 
 
-def build_base_record(category: str, index: int, rng: random.Random) -> dict[str, str]:
+def choose_real_product_profile(category: str, rng: random.Random, real_name_rate: float) -> dict[str, str] | None:
+    profiles = REAL_PRODUCT_PROFILES.get(category, [])
+    if not profiles or rng.random() >= real_name_rate:
+        return None
+    return weighted_pick(rng, profiles)
+
+
+def build_base_record(
+    category: str,
+    index: int,
+    rng: random.Random,
+    *,
+    use_real_product_name: bool = False,
+    real_name_rate: float = DEFAULT_REAL_NAME_RATE,
+) -> dict[str, str]:
     config = CATEGORY_CONFIG[category]
-    brand = weighted_pick(rng, config["brands"])
-    model = weighted_pick(rng, config["models"])
-    descriptor = weighted_pick(rng, config["descriptions"])
+    real_profile = (
+        choose_real_product_profile(category, rng, real_name_rate)
+        if use_real_product_name
+        else None
+    )
+
+    if real_profile:
+        brand = real_profile["brand"]
+        model = real_profile["model"]
+        name = real_profile["name"]
+        description = real_profile["description"]
+    else:
+        brand = weighted_pick(rng, config["brands"])
+        model = weighted_pick(rng, config["models"])
+        descriptor = weighted_pick(rng, config["descriptions"])
+        name = f"{brand}{model}{config['name_suffix']}"
+        description = f"{descriptor}{config['name_suffix']}"
 
     record = {
         "sample_id": build_id(category, index),
         "split": "train",
         "category": category,
-        "name": f"{brand}{model}{config['name_suffix']}",
-        "description": f"{descriptor}{config['name_suffix']}",
+        "name": name,
+        "description": description,
         "brand": brand,
         "model": model,
         "serial_number": "",
@@ -300,8 +1141,19 @@ def build_reason_codes(codes: list[str]) -> str:
     return "|".join(unique_codes)
 
 
-def pass_record(category: str, index: int, rng: random.Random) -> dict[str, str]:
-    record = build_base_record(category, index, rng)
+def pass_record(
+    category: str,
+    index: int,
+    rng: random.Random,
+    real_name_rate: float = DEFAULT_REAL_NAME_RATE,
+) -> dict[str, str]:
+    record = build_base_record(
+        category,
+        index,
+        rng,
+        use_real_product_name=True,
+        real_name_rate=real_name_rate,
+    )
     scenario = PASS_SCENARIOS[index % len(PASS_SCENARIOS)]
     record["inspection_conclusion"] = "pass"
     record["risk_level"] = "low"
@@ -321,8 +1173,19 @@ def pass_record(category: str, index: int, rng: random.Random) -> dict[str, str]
     return record
 
 
-def review_record(category: str, index: int, rng: random.Random) -> dict[str, str]:
-    record = build_base_record(category, index, rng)
+def review_record(
+    category: str,
+    index: int,
+    rng: random.Random,
+    real_name_rate: float = DEFAULT_REAL_NAME_RATE,
+) -> dict[str, str]:
+    record = build_base_record(
+        category,
+        index,
+        rng,
+        use_real_product_name=True,
+        real_name_rate=real_name_rate,
+    )
     scenario = REVIEW_SCENARIOS[index % len(REVIEW_SCENARIOS)]
     record["inspection_conclusion"] = "conditional_pass"
     record["risk_level"] = "medium"
@@ -488,7 +1351,13 @@ def apply_realism_noise(record: dict[str, str], rng: random.Random) -> None:
         add_field_noise(record, rng)
 
 
-def records_for_category(category: str, count: int, start_index: int, rng: random.Random) -> list[dict[str, str]]:
+def records_for_category(
+    category: str,
+    count: int,
+    start_index: int,
+    rng: random.Random,
+    real_name_rate: float,
+) -> list[dict[str, str]]:
     pass_count = int(count * 0.4)
     review_count = int(count * 0.35)
     fail_count = count - pass_count - review_count
@@ -499,7 +1368,10 @@ def records_for_category(category: str, count: int, start_index: int, rng: rando
     rows: list[dict[str, str]] = []
     for local_index, builder in enumerate(builders):
         absolute_index = start_index + local_index
-        row = builder(category, absolute_index, rng)
+        if builder in {pass_record, review_record}:
+            row = builder(category, absolute_index, rng, real_name_rate)
+        else:
+            row = builder(category, absolute_index, rng)
         row["sample_id"] = build_id(category, absolute_index)
         row["split"] = determine_split(local_index, count)
         apply_realism_noise(row, rng)
@@ -507,9 +1379,15 @@ def records_for_category(category: str, count: int, start_index: int, rng: rando
     return rows
 
 
-def generate_rows(total_rows: int, seed: int) -> list[dict[str, str]]:
+def generate_rows(
+    total_rows: int,
+    seed: int,
+    real_name_rate: float = DEFAULT_REAL_NAME_RATE,
+) -> list[dict[str, str]]:
     if total_rows < len(CATEGORIES):
         raise ValueError("total_rows must be at least the number of categories")
+    if real_name_rate < 0 or real_name_rate > 1:
+        raise ValueError("real_name_rate must be between 0 and 1")
 
     rng = random.Random(seed)
     per_category_base = total_rows // len(CATEGORIES)
@@ -519,7 +1397,7 @@ def generate_rows(total_rows: int, seed: int) -> list[dict[str, str]]:
     absolute_index = 1
     for category_index, category in enumerate(CATEGORIES):
         count = per_category_base + (1 if category_index < remainder else 0)
-        rows.extend(records_for_category(category, count, absolute_index, rng))
+        rows.extend(records_for_category(category, count, absolute_index, rng, real_name_rate))
         absolute_index += count
     return rows
 
@@ -556,6 +1434,15 @@ def load_real_fail_rows(input_path: Path, max_rows: int, seed: int) -> list[dict
     return rows
 
 
+def load_real_fail_sources(input_paths: list[Path], max_rows_per_source: int, seed: int) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for source_index, input_path in enumerate(input_paths):
+        source_rows = load_real_fail_rows(input_path, max_rows_per_source, seed + source_index)
+        rows.extend(source_rows)
+        print(f"Included {len(source_rows)} real-world FAIL rows from {input_path}")
+    return rows
+
+
 def write_csv(rows: list[dict[str, str]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -571,35 +1458,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
     parser.add_argument("--output", default=str(OUTPUT_PATH), help="Output CSV path")
     parser.add_argument(
+        "--real-name-rate",
+        type=float,
+        default=DEFAULT_REAL_NAME_RATE,
+        help=(
+            "Share of synthetic PASS/REVIEW rows that use real common product names. "
+            "Synthetic FAIL rows still use fictional names; real FAIL rows come from recall imports."
+        ),
+    )
+    parser.add_argument(
         "--include-real-fail",
         action="store_true",
         help="Append normalized real-world FAIL recall samples to the generated dataset",
     )
     parser.add_argument(
         "--real-fail-input",
-        default=str(DEFAULT_REAL_FAIL_INPUT),
-        help="Path to normalized real-world FAIL samples",
+        action="append",
+        dest="real_fail_inputs",
+        help=(
+            "Path to normalized real-world FAIL samples. "
+            "Can be passed multiple times. Defaults to CPSC recall samples when omitted."
+        ),
     )
     parser.add_argument(
         "--max-real-fail-rows",
         type=int,
-        default=160,
-        help="Maximum real-world FAIL rows to append; 0 means all rows",
+        default=DEFAULT_MAX_REAL_FAIL_ROWS,
+        help="Maximum real-world FAIL rows to append per input source; 0 means all rows",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    rows = generate_rows(args.rows, args.seed)
+    rows = generate_rows(args.rows, args.seed, args.real_name_rate)
     if args.include_real_fail:
-        real_fail_rows = load_real_fail_rows(
-            Path(args.real_fail_input),
+        real_fail_inputs = [Path(path) for path in (args.real_fail_inputs or [str(DEFAULT_REAL_FAIL_INPUT)])]
+        real_fail_rows = load_real_fail_sources(
+            real_fail_inputs,
             args.max_real_fail_rows,
             args.seed,
         )
         rows.extend(real_fail_rows)
-        print(f"Included {len(real_fail_rows)} real-world FAIL rows from {args.real_fail_input}")
     write_csv(rows, Path(args.output))
     print(f"Generated {len(rows)} rows -> {args.output}")
 

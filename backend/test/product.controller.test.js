@@ -1426,6 +1426,7 @@ test("addProduct degrades AI service failures to manual review", async (t) => {
   chainService.contract.methods.sellers = () => ({
     call: async () => ({
       walletAddress: "0x0000000000000000000000000000000000000005",
+      isRegistered: true,
       isBlacklisted: false,
       reputationScore: "60",
     }),
@@ -1542,6 +1543,7 @@ test("resubmitProduct degrades AI service failures to manual review", async (t) 
   chainService.contract.methods.sellers = () => ({
     call: async () => ({
       walletAddress: "0x0000000000000000000000000000000000000007",
+      isRegistered: true,
       isBlacklisted: false,
       reputationScore: "60",
     }),

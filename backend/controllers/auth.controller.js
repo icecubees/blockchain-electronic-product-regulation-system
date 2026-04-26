@@ -7,13 +7,11 @@ const auditService = require("../services/audit.service");
 const {
   syncSellerBlacklist,
   removeSellerFromBlacklist,
+  ensureSellerWalletRegistered,
   DEFAULT_RESTORE_SCORE,
 } = require("../services/seller-blacklist.service");
 const {
   web3,
-  contract,
-  accounts,
-  sendContractTransaction,
 } = require("../services/chain.service");
 
 const User = db.user;
@@ -342,11 +340,7 @@ exports.approveSeller = async (req, res) => {
       return res.send({ message: "卖家申请已驳回" });
     }
 
-    const receipt = await sendContractTransaction({
-      account: accounts.regulator,
-      method: contract.methods.registerSeller(seller.ethAddress),
-      gas: 400000,
-    });
+    const registrationResult = await ensureSellerWalletRegistered(seller.ethAddress);
 
     seller.status = 1;
     await seller.save();
@@ -357,9 +351,15 @@ exports.approveSeller = async (req, res) => {
       targetType: "USER",
       targetId: seller.id,
       result: "SUCCESS",
-      details: { username: seller.username, reason: reviewReason },
+      details: {
+        username: seller.username,
+        reason: reviewReason,
+        chainRegistration: registrationResult.alreadyRegistered
+          ? "already_registered"
+          : "registered",
+      },
       req,
-      txHash: receipt.transactionHash,
+      txHash: registrationResult.receipt?.transactionHash || null,
     });
 
     return res.send({ message: "卖家审核通过并已激活" });
@@ -486,6 +486,17 @@ exports.bindWallet = async (req, res) => {
       return res.status(400).send({ message: "请输入有效的钱包地址" });
     }
 
+    let registrationResult = null;
+    if (user.role === "seller" && user.status === 1) {
+      try {
+        registrationResult = await ensureSellerWalletRegistered(walletAddress);
+      } catch (error) {
+        return res.status(500).send({
+          message: "卖家钱包链上注册失败：" + error.message,
+        });
+      }
+    }
+
     user.ethAddress = walletAddress;
     user.walletBound = true;
     await user.save();
@@ -496,8 +507,16 @@ exports.bindWallet = async (req, res) => {
       targetType: "USER",
       targetId: user.id,
       result: "SUCCESS",
-      details: { walletAddress },
+      details: {
+        walletAddress,
+        chainRegistration: registrationResult
+          ? registrationResult.alreadyRegistered
+            ? "already_registered"
+            : "registered"
+          : null,
+      },
       req,
+      txHash: registrationResult?.receipt?.transactionHash || null,
     });
 
     return res.send({

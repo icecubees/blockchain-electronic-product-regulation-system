@@ -119,6 +119,44 @@ ELECTRONIC_SIGNAL_KEYWORDS = [
     "wireless",
 ]
 
+NON_ELECTRONIC_TABLET_KEYWORDS = [
+    "acetaminophen",
+    "allergy",
+    "aspirin",
+    "blister pack",
+    "capsule",
+    "cold and flu",
+    "cough",
+    "dietary supplement",
+    "drug",
+    "gummy",
+    "ibuprofen",
+    "medicine",
+    "medication",
+    "multivitamin",
+    "pharmaceutical",
+    "pill",
+    "supplement",
+    "tablet bottle",
+    "vitamin",
+]
+
+TABLET_ELECTRONIC_DISAMBIGUATORS = [
+    "android",
+    "battery",
+    "charger",
+    "charging",
+    "computer",
+    "electronic",
+    "ipad",
+    "lcd",
+    "screen",
+    "touchscreen",
+    "usb",
+    "wi-fi",
+    "wifi",
+]
+
 
 def compact_text(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
@@ -320,11 +358,20 @@ def normalize_recall(recall: dict[str, Any], index: int) -> dict[str, str]:
 
 
 def is_relevant_electronic_row(row: dict[str, str]) -> bool:
-    if row["category"] != "accessory":
-        return True
     lowered = " ".join(
         [row.get("name", ""), row.get("description", ""), row.get("report_text", "")]
     ).lower()
+
+    if row["category"] == "tablet" and any(
+        contains_keyword(lowered, keyword) for keyword in NON_ELECTRONIC_TABLET_KEYWORDS
+    ):
+        return any(
+            contains_keyword(lowered, keyword) for keyword in TABLET_ELECTRONIC_DISAMBIGUATORS
+        )
+
+    if row["category"] != "accessory":
+        return True
+
     return any(contains_keyword(lowered, keyword) for keyword in ELECTRONIC_SIGNAL_KEYWORDS)
 
 

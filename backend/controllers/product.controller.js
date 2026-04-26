@@ -5,7 +5,10 @@ const db = require("../models");
 const auditService = require("../services/audit.service");
 const integrationJobService = require("../services/integration-job.service");
 const settingService = require("../services/system-setting.service");
-const { syncSellerBlacklist } = require("../services/seller-blacklist.service");
+const {
+  syncSellerBlacklist,
+  ensureSellerWalletRegistered,
+} = require("../services/seller-blacklist.service");
 const {
   web3,
   contract,
@@ -358,6 +361,36 @@ function buildCreateProductMethod(productPayload, sellerWallet) {
     productPayload.stock,
     sellerWallet
   );
+}
+
+async function prepareSellerWalletForChainUse(seller, currentSellerWallet, req, source) {
+  const registrationResult = await ensureSellerWalletRegistered(currentSellerWallet);
+
+  if (!addressesEqual(seller.ethAddress, currentSellerWallet)) {
+    seller.ethAddress = currentSellerWallet;
+  }
+  seller.walletBound = true;
+  if (typeof seller.save === "function") {
+    await seller.save();
+  }
+
+  if (!registrationResult.alreadyRegistered) {
+    await auditService.record({
+      operator: req.user,
+      action: "SELLER_WALLET_CHAIN_REGISTERED",
+      targetType: "USER",
+      targetId: seller.id,
+      result: "SUCCESS",
+      details: {
+        walletAddress: currentSellerWallet,
+        source,
+      },
+      req,
+      txHash: registrationResult.receipt?.transactionHash || null,
+    });
+  }
+
+  return registrationResult;
 }
 
 async function syncExtendedChainLifecycle(product, operatorAccount) {
@@ -1573,10 +1606,6 @@ exports.addProduct = async (req, res) => {
     if (seller.status !== 1) {
       return res.status(403).send({ message: "Seller account is not approved yet" });
     }
-    const sellerSync = await syncSellerBlacklist(seller);
-    if (sellerSync.isBlacklisted) {
-      return res.status(403).send({ message: "Your account is blacklisted" });
-    }
     if (electronicValidationError) {
       return res.status(400).send({ message: electronicValidationError });
     }
@@ -1585,12 +1614,16 @@ exports.addProduct = async (req, res) => {
     if (!currentSellerWallet || !web3.utils.isAddress(currentSellerWallet)) {
       return res.status(400).send({ message: "Valid seller wallet is required" });
     }
-    if (!addressesEqual(seller.ethAddress, currentSellerWallet)) {
-      seller.ethAddress = currentSellerWallet;
+    try {
+      await prepareSellerWalletForChainUse(seller, currentSellerWallet, req, "product_publish");
+    } catch (error) {
+      return res.status(409).send({
+        message: "卖家钱包链上注册失败：" + error.message,
+      });
     }
-    seller.walletBound = true;
-    if (typeof seller.save === "function") {
-      await seller.save();
+    const sellerSync = await syncSellerBlacklist(seller);
+    if (sellerSync.isBlacklisted) {
+      return res.status(403).send({ message: "Your account is blacklisted" });
     }
 
     const aiAuditEnabled = await settingService.isAiAuditEnabled();
@@ -2178,11 +2211,6 @@ exports.resubmitProduct = async (req, res) => {
     }
 
     const seller = await User.findByPk(product.sellerId);
-    const sellerSync = await syncSellerBlacklist(seller);
-    if (sellerSync.isBlacklisted) {
-      return res.status(403).send({ message: "Your account is blacklisted" });
-    }
-
     const nextName = String(name || product.name || "").trim();
     const nextDescription = String(description || product.description || "").trim();
     const nextPrice = Number(price ?? product.price);
@@ -2212,12 +2240,21 @@ exports.resubmitProduct = async (req, res) => {
     if (!currentSellerWallet || !web3.utils.isAddress(currentSellerWallet)) {
       return res.status(400).send({ message: "Valid seller wallet is required" });
     }
-    if (!addressesEqual(seller.ethAddress, currentSellerWallet)) {
-      seller.ethAddress = currentSellerWallet;
+    try {
+      await prepareSellerWalletForChainUse(
+        seller,
+        currentSellerWallet,
+        req,
+        "product_resubmit"
+      );
+    } catch (error) {
+      return res.status(409).send({
+        message: "卖家钱包链上注册失败：" + error.message,
+      });
     }
-    seller.walletBound = true;
-    if (typeof seller.save === "function") {
-      await seller.save();
+    const sellerSync = await syncSellerBlacklist(seller);
+    if (sellerSync.isBlacklisted) {
+      return res.status(403).send({ message: "Your account is blacklisted" });
     }
 
     const aiAuditEnabled = await settingService.isAiAuditEnabled();

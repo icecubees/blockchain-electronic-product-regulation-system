@@ -1,27 +1,38 @@
 # Electronic Audit Dataset
 
-`electronic_audit_dataset.csv` is a synthetic seed dataset for the prototype AI audit service.
+`electronic_audit_dataset.csv` is a synthetic and real-recall mixed seed dataset for the prototype AI audit service.
 
 To regenerate a larger dataset, run:
 
-`./venv/Scripts/python.exe generate_dataset.py --rows 2400`
+`./venv/Scripts/python.exe generate_dataset.py --rows 3200`
+
+Synthetic `PASS` and `REVIEW` rows now use real common product names for part of the generated rows
+(`--real-name-rate`, default `0.70`). Synthetic `FAIL` rows keep fictional names so that real brands are
+not assigned invented safety-failure labels; real `FAIL` names come from recall imports.
 
 To add real-world high-risk recall rows from the CPSC Recall Data API:
 
-`./venv/Scripts/python.exe cpsc_recall_importer.py --max-rows 240`
+`./venv/Scripts/python.exe cpsc_recall_importer.py --max-rows 320`
 
-Then regenerate the training dataset with those normalized CPSC `FAIL` rows appended:
+To add Chinese real-world recall rows from the official domestic consumer-product recall notices:
 
-`./venv/Scripts/python.exe generate_dataset.py --rows 2400 --include-real-fail --max-real-fail-rows 160`
+`./venv/Scripts/python.exe china_recall_importer.py --max-pages 58 --max-rows 320`
+
+Then regenerate the training dataset with the normalized real-world `FAIL` rows appended:
+
+`./venv/Scripts/python.exe generate_dataset.py --rows 3200 --real-name-rate 0.82 --include-real-fail --real-fail-input data/cpsc_recall_fail_samples.csv --real-fail-input data/china_recall_fail_samples.csv --max-real-fail-rows 240`
 
 The generator now injects:
 
 - label-balanced category coverage
+- more real common product names for synthetic `PASS` and `REVIEW`
 - condition and compliance edge cases
 - short or noisy report text
 - OCR-style formatting noise
 - minor text/field contradictions for robustness
 - optional real CPSC recall text, hazard, incident, remedy, and source URL signals
+- optional Chinese domestic recall text, defect, consequence, remedy, and source URL signals
+- CPSC tablet disambiguation so medicine/vitamin tablet recalls do not enter the electronics dataset
 
 To generate a harder independent holdout set, run:
 

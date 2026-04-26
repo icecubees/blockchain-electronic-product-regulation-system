@@ -22,6 +22,35 @@ async function fetchChainSellerData(ethAddress) {
   return sellerData;
 }
 
+async function isSellerWalletRegistered(ethAddress) {
+  const sellerData = await fetchChainSellerData(ethAddress);
+  return Boolean(sellerData?.isRegistered);
+}
+
+async function ensureSellerWalletRegistered(ethAddress) {
+  if (!ethAddress) {
+    throw new Error("Seller wallet is required");
+  }
+
+  if (await isSellerWalletRegistered(ethAddress)) {
+    return {
+      alreadyRegistered: true,
+      receipt: null,
+    };
+  }
+
+  const receipt = await sendContractTransaction({
+    account: accounts.regulator,
+    method: contract.methods.registerSeller(ethAddress),
+    gas: 400000,
+  });
+
+  return {
+    alreadyRegistered: false,
+    receipt,
+  };
+}
+
 async function syncSellerBlacklist(user) {
   const dbFallback = {
     isBlacklisted: Boolean(user?.isBlacklisted),
@@ -107,5 +136,7 @@ module.exports = {
   syncSellerBlacklist,
   removeSellerFromBlacklist,
   fetchChainSellerData,
+  isSellerWalletRegistered,
+  ensureSellerWalletRegistered,
   DEFAULT_RESTORE_SCORE,
 };

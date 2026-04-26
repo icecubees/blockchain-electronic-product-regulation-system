@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const db = require("../models");
 const authController = require("../controllers/auth.controller");
 const auditService = require("../services/audit.service");
+const chainService = require("../services/chain.service");
 const { createMockRes } = require("./test-helpers");
 
 test("register rejects elevated self-registration roles", async (t) => {
@@ -233,4 +234,85 @@ test("updateUserStatus blocks supervisors from managing peer privileged users", 
   assert.equal(res.statusCode, 403);
   assert.equal(res.body.message, "无权治理该用户");
   assert.equal(accessDeniedCalled, true);
+});
+
+test("bindWallet registers an approved seller wallet on chain before saving", async (t) => {
+  const originalFindByPk = db.user.findByPk;
+  const originalAuditRecord = auditService.record;
+  const originalSellerMethod = chainService.contract.methods.sellers;
+  const originalRegisterSellerMethod = chainService.contract.methods.registerSeller;
+  const originalGetGasPrice = chainService.web3.eth.getGasPrice;
+  const originalGetAccounts = chainService.web3.eth.getAccounts;
+  const originalSendTransaction = chainService.web3.eth.sendTransaction;
+  const walletAddress = "0x00000000000000000000000000000000000000a1";
+
+  const callOrder = [];
+  let capturedAudit = null;
+  let registeredWallet = null;
+  let savedWallet = null;
+
+  db.user.findByPk = async () => ({
+    id: 21,
+    username: "seller_wallet",
+    role: "seller",
+    status: 1,
+    ethAddress: "0x00000000000000000000000000000000000000b1",
+    walletBound: true,
+    async save() {
+      callOrder.push("save");
+      savedWallet = this.ethAddress;
+      return this;
+    },
+  });
+  auditService.record = async (payload) => {
+    capturedAudit = payload;
+  };
+  chainService.contract.methods.sellers = () => ({
+    call: async () => ({
+      walletAddress: "0x0000000000000000000000000000000000000000",
+      isRegistered: false,
+      isBlacklisted: false,
+      reputationScore: "0",
+    }),
+  });
+  chainService.contract.methods.registerSeller = (wallet) => {
+    registeredWallet = wallet;
+    return {
+      encodeABI: () => "0xregisterSeller",
+    };
+  };
+  chainService.web3.eth.getGasPrice = async () => "1";
+  chainService.web3.eth.getAccounts = async () => ["0xadmin", "0xregulator", "0xmarket"];
+  chainService.web3.eth.sendTransaction = async () => {
+    callOrder.push("register");
+    return { transactionHash: "0xregistered-wallet" };
+  };
+
+  t.after(() => {
+    db.user.findByPk = originalFindByPk;
+    auditService.record = originalAuditRecord;
+    chainService.contract.methods.sellers = originalSellerMethod;
+    chainService.contract.methods.registerSeller = originalRegisterSellerMethod;
+    chainService.web3.eth.getGasPrice = originalGetGasPrice;
+    chainService.web3.eth.getAccounts = originalGetAccounts;
+    chainService.web3.eth.sendTransaction = originalSendTransaction;
+  });
+
+  const req = {
+    body: { walletAddress },
+    userId: 21,
+    user: { id: 21, role: "seller", username: "seller_wallet" },
+  };
+  const res = createMockRes();
+
+  await authController.bindWallet(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.message, "钱包绑定成功");
+  assert.equal(registeredWallet, walletAddress);
+  assert.deepEqual(callOrder, ["register", "save"]);
+  assert.equal(savedWallet, walletAddress);
+  assert.equal(capturedAudit.action, "SELLER_WALLET_BOUND");
+  assert.equal(capturedAudit.details.chainRegistration, "registered");
+  assert.equal(capturedAudit.txHash, "0xregistered-wallet");
 });
