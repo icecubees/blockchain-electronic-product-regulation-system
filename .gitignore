@@ -3,3 +3,12 @@ backend/.env
 output/
 tmp/
 .tmp/
+
+# IDE
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
