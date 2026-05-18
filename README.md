@@ -1,4 +1,5 @@
-# 基于区块链的电子产品交易平台监管系统的设计与实现
+# 基于区块链的电子产品交易平台监管系统
+# blockchain-electronic-product-regulation-system
 
 ## 项目简介
 
