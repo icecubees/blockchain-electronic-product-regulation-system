@@ -1,5 +1,14 @@
 # 基于区块链的电子产品交易平台监管系统的设计与实现
 
+## 项目说明
+
+- 项目名称：基于区块链的电子产品交易平台监管系统
+- 项目作者：Chen YiZhao
+- 作者单位：暨南大学网络空间安全学院
+- 开发语言：JavaScript、Python、Solidity、HTML、CSS
+- 框架：React、Express、Flask、Sequelize、Truffle
+- 核心技术：区块链智能合约、Web3.js、MySQL 数据持久化、AI 预审核、JWT 身份认证、二维码溯源、IPFS 文件存证
+
 ## 项目简介
 
 本系统面向毕业设计课题“基于区块链的电子产品交易平台监管系统的设计与实现”，实现了一个围绕电子产品交易、审核、追溯与监管的原型系统。系统将传统电商业务流程与区块链存证、监管审核、AI 辅助预审相结合，用于展示电子产品交易平台在合规监管场景下的设计思路与实现方案。
@@ -233,7 +242,29 @@ node .\scripts\init-privileged-user.js --username=regulator --password=123456
 node .\scripts\init-privileged-user.js --username=admin_reg --password=YourPassword123
 ```
 
-### 8. 启动前端
+### 8. 导入答辩演示数据
+
+如果希望每个演示入口都有可操作数据，在 MySQL、Ganache、合约和后端依赖准备好后，在仓库根目录执行：
+
+```powershell
+npm run seed:demo
+```
+
+脚本会补齐监管方、卖家、买家、待审核卖家、待审核商品、可购买商品、订单、投诉、售后、召回通知、黑名单和审计日志数据。脚本可重复执行，重复运行会刷新 `demo_` / `DEMO` 前缀的演示数据，不会批量清空现有业务数据。
+
+推荐演示账号如下，密码均为 `123456`：
+
+```text
+监管方：demo_regulator
+普通卖家：demo_seller
+二手/翻新卖家：demo_refurb_seller
+智能配件卖家：demo_accessory_seller
+买家：demo_buyer
+备用买家：demo_buyer_backup
+企业买家：demo_enterprise_buyer
+```
+
+### 9. 启动前端
 
 新开一个 PowerShell 窗口，执行：
 
@@ -314,4 +345,3 @@ npm run test:backend
 npm run test:frontend
 npm run test:blockchain
 ```
-
