@@ -16,7 +16,7 @@ blockchain/    Solidity 合约与 Truffle 部署脚本
 ai_service/    Flask AI 审核服务
 ```
 
-## 项目说明
+## 项目声明
 
 - 项目名称：基于区块链的电子产品交易平台监管系统
 - 项目作者：Chen YiZhao
